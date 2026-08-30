@@ -2,7 +2,14 @@ import subprocess
 from pathlib import Path
 
 
-def validate_target_file(repo_path: str, file_name: str) -> Path:
+# ============================================================
+# TARGET FILE VALIDATION
+# ============================================================
+
+def validate_target_file(
+    repo_path: str,
+    file_name: str
+) -> Path:
     """
     Validate that the target file exists inside the repository
     and is not a test file.
@@ -11,11 +18,13 @@ def validate_target_file(repo_path: str, file_name: str) -> Path:
     root = Path(repo_path).resolve()
     target = (root / file_name).resolve()
 
+    # Prevent path traversal
     if root not in target.parents:
         raise ValueError(
             "Target file is outside repository."
         )
 
+    # Target must exist
     if not target.is_file():
         raise FileNotFoundError(
             f"Target file does not exist: {file_name}"
@@ -23,6 +32,7 @@ def validate_target_file(repo_path: str, file_name: str) -> Path:
 
     filename = target.name.lower()
 
+    # Never modify test files
     if filename.startswith("test_"):
         raise ValueError(
             "Agent is not allowed to modify test files."
@@ -33,6 +43,7 @@ def validate_target_file(repo_path: str, file_name: str) -> Path:
             "Agent is not allowed to modify test files."
         )
 
+    # Never modify pytest configuration
     if filename == "conftest.py":
         raise ValueError(
             "Agent is not allowed to modify test configuration."
@@ -40,6 +51,10 @@ def validate_target_file(repo_path: str, file_name: str) -> Path:
 
     return target
 
+
+# ============================================================
+# BACKUP
+# ============================================================
 
 def create_backup(
     repo_path: str,
@@ -68,6 +83,10 @@ def create_backup(
     return backup
 
 
+# ============================================================
+# APPLY FIX
+# ============================================================
+
 def apply_fix(
     repo_path: str,
     file_name: str,
@@ -92,6 +111,10 @@ def apply_fix(
         encoding="utf-8"
     )
 
+
+# ============================================================
+# RESTORE BACKUP
+# ============================================================
 
 def restore_backup(
     repo_path: str,
@@ -125,6 +148,10 @@ def restore_backup(
     backup.unlink()
 
 
+# ============================================================
+# REMOVE BACKUP
+# ============================================================
+
 def remove_backup(
     repo_path: str,
     file_name: str
@@ -146,7 +173,13 @@ def remove_backup(
         backup.unlink()
 
 
-def get_diff(repo_path: str) -> str:
+# ============================================================
+# GIT DIFF
+# ============================================================
+
+def get_diff(
+    repo_path: str
+) -> str:
     """
     Return the current git diff for the repository.
     """
@@ -170,3 +203,157 @@ def get_diff(repo_path: str) -> str:
         )
 
     return result.stdout.strip()
+
+
+# ============================================================
+# GET CHANGED FILES
+# ============================================================
+
+def get_changed_files(
+    repo_path: str
+) -> list[str]:
+    """
+    Return files currently modified according to git.
+    """
+
+    result = subprocess.run(
+        [
+            "git",
+            "status",
+            "--short"
+        ],
+        cwd=repo_path,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=30
+    )
+
+    if result.returncode != 0:
+        raise RuntimeError(
+            result.stderr.strip()
+        )
+
+    changed_files = []
+
+    for line in result.stdout.splitlines():
+
+        line = line.strip()
+
+        if not line:
+            continue
+
+        # Git status format:
+        #
+        # XY filename
+        #
+        # Example:
+        # M  calculator.py
+        #
+        # The first two characters are status flags.
+
+        if len(line) < 4:
+            continue
+
+        file_name = line[3:].strip()
+
+        # Handle renamed files:
+        #
+        # old.py -> new.py
+        #
+        if " -> " in file_name:
+            file_name = file_name.split(
+                " -> "
+            )[-1]
+
+        # Remove surrounding quotes if Git
+        # returns a quoted path.
+        file_name = file_name.strip('"')
+
+        changed_files.append(
+            file_name
+        )
+
+    return changed_files
+
+
+# ============================================================
+# CHANGED FILE SAFETY VALIDATION
+# ============================================================
+
+def validate_changed_files(
+    repo_path: str,
+    allowed_file: str
+) -> None:
+    """
+    Ensure the agent has modified only the intended
+    source file.
+
+    Backup files are allowed because they are created
+    intentionally by the agent.
+    """
+
+    changed_files = get_changed_files(
+        repo_path
+    )
+
+    allowed_path = Path(
+        allowed_file
+    ).as_posix()
+
+    unexpected_files = []
+
+    for file_name in changed_files:
+
+        normalized_path = Path(
+            file_name
+        ).as_posix()
+
+        # Intended target file
+        if normalized_path == allowed_path:
+            continue
+
+        # Agent-created backup
+        if normalized_path == (
+            allowed_path + ".bak"
+        ):
+            continue
+
+        unexpected_files.append(
+            file_name
+        )
+
+    if unexpected_files:
+
+        raise RuntimeError(
+            "Unexpected files modified by agent: "
+            + ", ".join(
+                unexpected_files
+            )
+        )
+
+
+# ============================================================
+# PYTHON SYNTAX VALIDATION
+# ============================================================
+
+def validate_python_syntax(
+    code: str
+) -> None:
+    """
+    Validate Python source code before applying it.
+
+    Raises SyntaxError when the generated code is invalid.
+    """
+
+    if not code.strip():
+        raise ValueError(
+            "Cannot validate empty Python code."
+        )
+
+    compile(
+        code,
+        "<agent_generated_code>",
+        "exec"
+    )
