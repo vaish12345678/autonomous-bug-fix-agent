@@ -1,0 +1,1 @@
+The is_even function returns incorrect results. Even numbers are being identified as odd numbers and odd numbers are being identified as even numbers. Fix the implementation without modifying the tests.
