@@ -1,0 +1,6 @@
+{
+    "repository": "C:\\Users\\vaish\\Projects\\bug-fix\\autonomous-bug-fix-agent\\agentic-bugfixer\\benchmarks\\bug_01\\repo",
+    "target_file": "calculator.py",
+    "snapshot": "C:\\Users\\vaish\\Projects\\bug-fix\\autonomous-bug-fix-agent\\agentic-bugfixer\\evaluation\\recovery\\20260831_002353_528040\\calculator.py",
+    "created_at": "2026-08-31T00:23:53.532809"
+}

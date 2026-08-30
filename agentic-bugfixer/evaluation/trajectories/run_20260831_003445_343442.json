@@ -1,0 +1,105 @@
+{
+    "run_id": "run_20260831_003445_343442",
+    "benchmark": "demo",
+    "started_at": "2026-08-31T00:34:45.343442",
+    "event_count": 10,
+    "events": [
+        {
+            "step": 1,
+            "timestamp": "2026-08-31T00:34:45.343442",
+            "event": "RUN_STARTED",
+            "details": {
+                "benchmark": "demo"
+            }
+        },
+        {
+            "step": 2,
+            "timestamp": "2026-08-31T00:34:45.343442",
+            "event": "AI_DECISION",
+            "details": {
+                "stage": "BUG_ANALYSIS",
+                "decision": "calculator.py is the target source file.",
+                "reasoning": "Repository inspection identified the incorrect arithmetic operation."
+            }
+        },
+        {
+            "step": 3,
+            "timestamp": "2026-08-31T00:34:45.343442",
+            "event": "ACTION",
+            "details": {
+                "action": "Read target source file",
+                "tool": "read_file",
+                "result": "Source file loaded successfully."
+            }
+        },
+        {
+            "step": 4,
+            "timestamp": "2026-08-31T00:34:45.343442",
+            "event": "AI_DECISION",
+            "details": {
+                "stage": "PATCH_GENERATION",
+                "decision": "Replace multiplication with division.",
+                "reasoning": null
+            }
+        },
+        {
+            "step": 5,
+            "timestamp": "2026-08-31T00:34:45.343442",
+            "event": "ACTION",
+            "details": {
+                "action": "Generate patch",
+                "tool": "AI patch generator",
+                "result": "Patch generated."
+            }
+        },
+        {
+            "step": 6,
+            "timestamp": "2026-08-31T00:34:45.343442",
+            "event": "ACTION",
+            "details": {
+                "action": "Validate patch syntax",
+                "tool": "syntax validator",
+                "result": "Syntax validation passed."
+            }
+        },
+        {
+            "step": 7,
+            "timestamp": "2026-08-31T00:34:45.343442",
+            "event": "HUMAN_CHECKPOINT",
+            "details": {
+                "decision": "APPROVED",
+                "reviewer": null
+            }
+        },
+        {
+            "step": 8,
+            "timestamp": "2026-08-31T00:34:45.343442",
+            "event": "ACTION",
+            "details": {
+                "action": "Apply patch",
+                "tool": "patcher",
+                "result": "Patch applied successfully."
+            }
+        },
+        {
+            "step": 9,
+            "timestamp": "2026-08-31T00:34:45.343442",
+            "event": "TEST_RESULT",
+            "details": {
+                "passed": true,
+                "output": "2 passed in 0.02s",
+                "runtime": 1.89
+            }
+        },
+        {
+            "step": 10,
+            "timestamp": "2026-08-31T00:34:45.343442",
+            "event": "FINAL_RESULT",
+            "details": {
+                "status": "VERIFIED_AND_ACCEPTED",
+                "confidence": 100.0,
+                "risk_level": "LOW"
+            }
+        }
+    ]
+}

@@ -1,0 +1,16 @@
+{
+    "benchmark": "demo",
+    "issue": "divide() returns an incorrect result.",
+    "target_file": "calculator.py",
+    "root_cause": "The implementation performs the wrong arithmetic operation.",
+    "correction": "Replace multiplication with division.",
+    "risk": {
+        "level": "LOW",
+        "score": 0
+    },
+    "confidence": 100.0,
+    "diff": "- return a * b\n+ return a / b",
+    "created_at": "2026-08-31T00:22:05.697469",
+    "approved": true,
+    "approval_reason": "Human approved the proposed patch."
+}

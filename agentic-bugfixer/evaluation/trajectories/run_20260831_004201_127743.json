@@ -1,0 +1,102 @@
+{
+    "run_id": "run_20260831_004201_127743",
+    "benchmark": "bug_01",
+    "started_at": "2026-08-31T00:42:01.127743",
+    "event_count": 10,
+    "events": [
+        {
+            "step": 1,
+            "event": "RUN_STARTED",
+            "timestamp": "2026-08-31T00:42:01.127743",
+            "details": {
+                "benchmark": "bug_01"
+            }
+        },
+        {
+            "step": 2,
+            "event": "ACTION",
+            "timestamp": "2026-08-31T00:42:01.127743",
+            "details": {
+                "action": "Read repository",
+                "tool": "read_repository",
+                "result": "Repository loaded"
+            }
+        },
+        {
+            "step": 3,
+            "event": "AI_DECISION",
+            "timestamp": "2026-08-31T00:42:01.127743",
+            "details": {
+                "stage": "BUG_ANALYSIS",
+                "decision": "calculator.py selected",
+                "reasoning": "AI identified wrong arithmetic"
+            }
+        },
+        {
+            "step": 4,
+            "event": "ACTION",
+            "timestamp": "2026-08-31T00:42:01.128748",
+            "details": {
+                "action": "Generate patch",
+                "tool": "AI patch generator",
+                "result": "Patch generated"
+            }
+        },
+        {
+            "step": 5,
+            "event": "ACTION",
+            "timestamp": "2026-08-31T00:42:01.128748",
+            "details": {
+                "action": "Validate patch",
+                "tool": "patch validator",
+                "result": "Syntax passed"
+            }
+        },
+        {
+            "step": 6,
+            "event": "HUMAN_CHECKPOINT",
+            "timestamp": "2026-08-31T00:42:01.128748",
+            "details": {
+                "decision": "APPROVED"
+            }
+        },
+        {
+            "step": 7,
+            "event": "ACTION",
+            "timestamp": "2026-08-31T00:42:01.128748",
+            "details": {
+                "action": "Apply patch",
+                "tool": "patcher",
+                "result": "Patch applied"
+            }
+        },
+        {
+            "step": 8,
+            "event": "TARGET_MODIFIED",
+            "timestamp": "2026-08-31T00:42:01.128748",
+            "details": {
+                "file": "calculator.py"
+            }
+        },
+        {
+            "step": 9,
+            "event": "TEST_RESULT",
+            "timestamp": "2026-08-31T00:42:01.128748",
+            "details": {
+                "passed": true,
+                "output": "2 passed",
+                "runtime": 1.89
+            }
+        },
+        {
+            "step": 10,
+            "event": "FINAL_RESULT",
+            "timestamp": "2026-08-31T00:42:01.128748",
+            "details": {
+                "status": "VERIFIED_AND_ACCEPTED",
+                "confidence": 100,
+                "risk_level": "LOW"
+            }
+        }
+    ]
+}
