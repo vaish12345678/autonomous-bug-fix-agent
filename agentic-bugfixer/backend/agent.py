@@ -6,6 +6,7 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 from google import genai
+import json
 
 
 # ============================================================
@@ -797,12 +798,13 @@ def main():
         print(
             "\n========== APPLYING FIX ==========\n"
         )
-
         update_file(
             str(repo_path),
             target_file,
             fixed_code
         )
+
+        current_code = fixed_code
 
         print(
             f"✓ Fix applied to {target_file}"
@@ -821,11 +823,8 @@ def main():
         )
 
         if diff:
-
             print(diff)
-
         else:
-
             print(
                 "No git changes detected."
             )
@@ -858,6 +857,45 @@ def main():
 
             print(
                 f"✓ Target file: {target_file}"
+            )
+
+            print(
+                "========================================"
+            )
+
+            return
+
+        # ----------------------------------------------------
+        # FAILURE
+        # ----------------------------------------------------
+
+        print(
+            "\n❌ Tests failed."
+        )
+
+        # Read latest modified code
+
+        current_code = read_file(
+            str(repo_path),
+            target_file
+        )
+
+        # ----------------------------------------------------
+        # MAX ATTEMPTS
+        # ----------------------------------------------------
+
+        if attempt == max_attempts:
+
+            print(
+                "\n========================================"
+            )
+
+            print(
+                "❌ FIX NOT VERIFIED"
+            )
+
+            print(
+                "Maximum attempts reached."
             )
 
             print(
