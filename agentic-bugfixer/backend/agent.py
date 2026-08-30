@@ -6,7 +6,6 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 from google import genai
-import json
 
 
 # ============================================================
@@ -62,6 +61,9 @@ def read_repository(repo_path: str) -> str:
         if ".pytest_cache" in file.parts:
             continue
 
+        if file.name.endswith(".bak"):
+            continue
+
         try:
 
             content = file.read_text(
@@ -92,7 +94,6 @@ def clean_response(content: str) -> str:
 
     content = content.strip()
 
-    # Remove Python markdown fences
     content = re.sub(
         r"^```python\s*",
         "",
@@ -100,7 +101,6 @@ def clean_response(content: str) -> str:
         flags=re.IGNORECASE
     )
 
-    # Remove JSON markdown fences
     content = re.sub(
         r"^```json\s*",
         "",
@@ -108,7 +108,6 @@ def clean_response(content: str) -> str:
         flags=re.IGNORECASE
     )
 
-    # Remove generic markdown fences
     content = re.sub(
         r"^```\s*",
         "",
@@ -151,6 +150,7 @@ Determine:
 3. What correction is required.
 
 IMPORTANT:
+
 - Do not modify tests.
 - Do not invent files.
 - Choose a file that actually exists.
@@ -183,7 +183,6 @@ Required format:
 
     except json.JSONDecodeError:
 
-        # Try to extract JSON object
         match = re.search(
             r"\{.*\}",
             text,
@@ -231,7 +230,6 @@ def read_file(
         root / file_name
     ).resolve()
 
-    # Security check
     if root not in file_path.parents:
 
         raise ValueError(
@@ -351,7 +349,6 @@ def update_file(
         root / file_name
     ).resolve()
 
-    # Security check
     if root not in file_path.parents:
 
         raise ValueError(
@@ -371,6 +368,82 @@ def update_file(
 
 
 # ============================================================
+# CREATE BACKUP
+# ============================================================
+
+def create_backup(
+    repo_path: str,
+    target_file: str
+) -> str:
+
+    root = Path(repo_path).resolve()
+
+    file_path = (
+        root / target_file
+    ).resolve()
+
+    if root not in file_path.parents:
+
+        raise ValueError(
+            "Invalid file path."
+        )
+
+    if not file_path.is_file():
+
+        raise FileNotFoundError(
+            f"Target file does not exist: {target_file}"
+        )
+
+    backup_path = file_path.with_suffix(
+        file_path.suffix + ".bak"
+    )
+
+    backup_path.write_text(
+        file_path.read_text(
+            encoding="utf-8"
+        ),
+        encoding="utf-8"
+    )
+
+    return str(backup_path)
+
+
+# ============================================================
+# RESTORE BACKUP
+# ============================================================
+
+def restore_backup(
+    repo_path: str,
+    target_file: str
+):
+
+    root = Path(repo_path).resolve()
+
+    file_path = (
+        root / target_file
+    ).resolve()
+
+    backup_path = file_path.with_suffix(
+        file_path.suffix + ".bak"
+    )
+
+    if not backup_path.is_file():
+
+        raise FileNotFoundError(
+            f"Backup not found: {backup_path}"
+        )
+
+    file_path.write_text(
+        backup_path.read_text(
+            encoding="utf-8"
+        ),
+        encoding="utf-8"
+    )
+
+    backup_path.unlink()
+
+
+# ============================================================
 # RUN TESTS
 # ============================================================
 
@@ -385,7 +458,10 @@ def run_tests(
     try:
 
         result = subprocess.run(
-            ["pytest"],
+            [
+                "pytest",
+                "-q"
+            ],
             cwd=repo_path,
             capture_output=True,
             text=True,
@@ -431,7 +507,10 @@ def get_git_diff(
     try:
 
         result = subprocess.run(
-            ["git", "diff"],
+            [
+                "git",
+                "diff"
+            ],
             cwd=repo_path,
             capture_output=True,
             text=True,
@@ -713,6 +792,23 @@ def main():
     )
 
     # --------------------------------------------------------
+    # CREATE BACKUP
+    # --------------------------------------------------------
+
+    print(
+        "\n========== CREATING BACKUP ==========\n"
+    )
+
+    backup_path = create_backup(
+        str(repo_path),
+        target_file
+    )
+
+    print(
+        f"✓ Backup created: {backup_path}"
+    )
+
+    # --------------------------------------------------------
     # AGENT LOOP
     # --------------------------------------------------------
 
@@ -779,6 +875,19 @@ def main():
             fixed_code
         )
 
+        if not fixed_code:
+
+            print(
+                "❌ Agent returned empty code."
+            )
+
+            test_result = {
+                "passed": False,
+                "output": "Agent returned empty code."
+            }
+
+            continue
+
         # ----------------------------------------------------
         # SHOW PROPOSED CODE
         # ----------------------------------------------------
@@ -798,6 +907,7 @@ def main():
         print(
             "\n========== APPLYING FIX ==========\n"
         )
+
         update_file(
             str(repo_path),
             target_file,
@@ -823,8 +933,11 @@ def main():
         )
 
         if diff:
+
             print(diff)
+
         else:
+
             print(
                 "No git changes detected."
             )
@@ -859,6 +972,21 @@ def main():
                 f"✓ Target file: {target_file}"
             )
 
+            # Remove backup after successful verification
+
+            backup_file = Path(
+                backup_path
+            )
+
+            if backup_file.exists():
+
+                backup_file.unlink()
+
+                print(
+                    "✓ Backup removed after "
+                    "successful verification"
+                )
+
             print(
                 "========================================"
             )
@@ -872,8 +1000,6 @@ def main():
         print(
             "\n❌ Tests failed."
         )
-
-        # Read latest modified code
 
         current_code = read_file(
             str(repo_path),
@@ -898,43 +1024,31 @@ def main():
                 "Maximum attempts reached."
             )
 
-            print(
-                "========================================"
-            )
-
-            return
-
-        # ----------------------------------------------------
-        # FAILURE
-        # ----------------------------------------------------
-
-        print(
-            "\n❌ Tests failed."
-        )
-
-        # Read latest modified code
-        current_code = read_file(
-            str(repo_path),
-            target_file
-        )
-
-        # ----------------------------------------------------
-        # MAX ATTEMPTS
-        # ----------------------------------------------------
-
-        if attempt == max_attempts:
+            # ------------------------------------------------
+            # ROLLBACK
+            # ------------------------------------------------
 
             print(
-                "\n========================================"
+                "\n========== ROLLING BACK FIX ==========\n"
             )
 
-            print(
-                "❌ FIX NOT VERIFIED"
-            )
+            try:
 
-            print(
-                "Maximum attempts reached."
-            )
+                restore_backup(
+                    str(repo_path),
+                    target_file
+                )
+
+                print(
+                    f"✓ Original code restored for "
+                    f"{target_file}"
+                )
+
+            except Exception as error:
+
+                print(
+                    f"❌ Rollback failed: {error}"
+                )
 
             print(
                 "========================================"
