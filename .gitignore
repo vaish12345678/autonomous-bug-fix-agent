@@ -19,3 +19,6 @@ env/
 # OS
 .DS_Store
 Thumbs.db
+
+# Evaluation results
+agentic-bugfixer/evaluation/results/
