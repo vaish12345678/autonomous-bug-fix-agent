@@ -1,6 +1,7 @@
 import os
 import re
 import json
+import time
 import subprocess
 from pathlib import Path
 
@@ -14,18 +15,28 @@ from google import genai
 
 load_dotenv()
 
-api_key = os.getenv("GEMINI_API_KEY")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
-if not api_key:
+if not GEMINI_API_KEY:
     raise ValueError(
         "GEMINI_API_KEY is not set in the .env file."
     )
 
-client = genai.Client(api_key=api_key)
+client = genai.Client(
+    api_key=GEMINI_API_KEY
+)
 
 MODEL = os.getenv(
     "MODEL_NAME",
     "gemini-2.5-flash-lite"
+)
+
+MAX_AI_RETRIES = int(
+    os.getenv("MAX_AI_RETRIES", "3")
+)
+
+AI_RETRY_DELAY = float(
+    os.getenv("AI_RETRY_DELAY", "5")
 )
 
 
@@ -34,55 +45,79 @@ MODEL = os.getenv(
 # ============================================================
 
 BASE_DIR = Path(__file__).resolve().parent.parent
+
 BENCHMARKS_DIR = BASE_DIR / "benchmarks"
 
 
 # ============================================================
-# REPOSITORY READER
+# AI REQUEST LAYER
 # ============================================================
 
-def read_repository(repo_path: str) -> str:
-    root = Path(repo_path).resolve()
+def ask_ai(prompt: str) -> str:
+    """
+    Centralized AI request layer.
 
-    context = []
+    The agent does not contain benchmark-specific solutions.
+    All analysis, code generation and repair decisions are
+    delegated to the configured AI model.
+    """
 
-    for file in root.rglob("*"):
+    last_error = None
 
-        if not file.is_file():
-            continue
-
-        if ".git" in file.parts:
-            continue
-
-        if "__pycache__" in file.parts:
-            continue
-
-        if ".pytest_cache" in file.parts:
-            continue
-
-        if file.name.endswith(".bak"):
-            continue
+    for attempt in range(1, MAX_AI_RETRIES + 1):
 
         try:
-            content = file.read_text(
-                encoding="utf-8"
+
+            print(
+                f"\n🤖 AI request "
+                f"({attempt}/{MAX_AI_RETRIES})..."
             )
 
-            relative_path = file.relative_to(root)
-
-            context.append(
-                f"\n--- {relative_path} ---\n"
-                f"{content}"
+            response = client.models.generate_content(
+                model=MODEL,
+                contents=prompt
             )
 
-        except Exception:
-            pass
+            if not response:
+                raise RuntimeError(
+                    "AI returned no response."
+                )
 
-    return "\n".join(context)
+            if not response.text:
+                raise RuntimeError(
+                    "AI returned an empty response."
+                )
+
+            return response.text.strip()
+
+        except Exception as error:
+
+            last_error = error
+
+            print(
+                f"\n⚠ AI request failed: {error}"
+            )
+
+            if attempt < MAX_AI_RETRIES:
+
+                wait_time = AI_RETRY_DELAY * attempt
+
+                print(
+                    f"⏳ Retrying in "
+                    f"{wait_time:.1f} seconds..."
+                )
+
+                time.sleep(wait_time)
+
+    raise RuntimeError(
+        f"AI request failed after "
+        f"{MAX_AI_RETRIES} attempts: "
+        f"{last_error}"
+    )
 
 
 # ============================================================
-# CLEAN GEMINI RESPONSE
+# CLEAN AI RESPONSE
 # ============================================================
 
 def clean_response(content: str) -> str:
@@ -92,30 +127,15 @@ def clean_response(content: str) -> str:
 
     content = content.strip()
 
-    # Remove python code fence
+    # Remove markdown code fences.
+
     content = re.sub(
-        r"^```python\s*",
+        r"^```(?:python|json|text)?\s*",
         "",
         content,
         flags=re.IGNORECASE
     )
 
-    # Remove json code fence
-    content = re.sub(
-        r"^```json\s*",
-        "",
-        content,
-        flags=re.IGNORECASE
-    )
-
-    # Remove generic code fence
-    content = re.sub(
-        r"^```\s*",
-        "",
-        content
-    )
-
-    # Remove closing fence
     content = re.sub(
         r"\s*```$",
         "",
@@ -126,81 +146,89 @@ def clean_response(content: str) -> str:
 
 
 # ============================================================
-# FALLBACK BUG ANALYSIS
+# READ REPOSITORY
 # ============================================================
 
-def fallback_analysis(issue: str, repository: str) -> dict:
-    """
-    Deterministic fallback used when Gemini API is unavailable.
+def read_repository(
+    repo_path: str
+) -> str:
 
-    Handles known benchmark bugs without modifying tests.
-    """
+    root = Path(repo_path).resolve()
 
-    issue_lower = issue.lower()
+    if not root.is_dir():
+        raise FileNotFoundError(
+            f"Repository not found: {repo_path}"
+        )
 
-    # BUG 01
-    if "divide" in issue_lower:
+    ignored_directories = {
+        ".git",
+        "__pycache__",
+        ".pytest_cache",
+        "node_modules",
+        ".venv",
+        "venv",
+        "dist",
+        "build"
+    }
 
-        return {
-            "root_cause": (
-                "The divide function uses multiplication "
-                "instead of division."
-            ),
-            "file": "calculator.py",
-            "correction": (
-                "Replace the multiplication operator "
-                "with division."
+    supported_extensions = {
+        ".py",
+        ".js",
+        ".jsx",
+        ".ts",
+        ".tsx",
+        ".java",
+        ".cpp",
+        ".c",
+        ".h",
+        ".cs",
+        ".go",
+        ".rs",
+        ".rb",
+        ".php",
+        ".sql",
+        ".json",
+        ".yaml",
+        ".yml",
+        ".toml",
+        ".md",
+        ".txt"
+    }
+
+    files = []
+
+    for path in root.rglob("*"):
+
+        if not path.is_file():
+            continue
+
+        if any(
+            part in ignored_directories
+            for part in path.parts
+        ):
+            continue
+
+        if path.suffix.lower() not in supported_extensions:
+            continue
+
+        try:
+
+            content = path.read_text(
+                encoding="utf-8"
             )
-        }
 
-    # BUG 02
-    if "discount" in issue_lower:
+        except (UnicodeDecodeError, OSError):
 
-        return {
-            "root_cause": (
-                "The discount calculation uses an "
-                "incorrect percentage operation."
-            ),
-            "file": "discount.py",
-            "correction": (
-                "Calculate discount_amount as "
-                "price * discount_percent / 100."
-            )
-        }
+            continue
 
-    # BUG 03
-    if "average" in issue_lower:
+        relative_path = path.relative_to(root)
 
-        return {
-            "root_cause": (
-                "The average calculation performs "
-                "integer division."
-            ),
-            "file": "statistics.py",
-            "correction": (
-                "Use floating-point division when "
-                "calculating the average."
-            )
-        }
+        files.append(
+            f"\n===== FILE: {relative_path} =====\n"
+            f"{content}"
+        )
 
-    # BUG 04
-    if "even" in issue_lower or "parity" in issue_lower:
-
-        return {
-            "root_cause": (
-                "The parity condition is reversed."
-            ),
-            "file": "parity_checker.py",
-            "correction": (
-                "Return True when number modulo 2 "
-                "equals zero."
-            )
-        }
-
-    raise ValueError(
-        "Gemini unavailable and no deterministic "
-        "fallback matches this issue."
-    )
+    return "\n".join(files)
 
 
 # ============================================================
@@ -213,103 +241,133 @@ def analyze_bug(
 ) -> dict:
 
     prompt = f"""
-You are a senior autonomous software debugging agent.
+You are an autonomous senior software debugging agent.
 
-Analyze the software issue and repository.
+You must investigate a real software repository and
+determine the actual root cause of the reported issue.
 
-ISSUE:
+Do NOT rely on benchmark names.
+
+Do NOT assume a known bug pattern.
+
+Reason entirely from the issue and repository contents.
+
+============================================================
+ISSUE
+============================================================
 
 {issue}
 
-REPOSITORY:
+============================================================
+REPOSITORY
+============================================================
 
 {repository}
 
-Determine:
+============================================================
+TASK
+============================================================
 
-1. The root cause.
-2. The exact source file that needs modification.
-3. What correction is required.
+Analyze the repository carefully.
 
-IMPORTANT:
+1. Understand the reported issue.
+2. Inspect the relevant source files.
+3. Inspect tests when useful.
+4. Determine the expected behavior.
+5. Determine the actual behavior.
+6. Identify the exact root cause.
+7. Identify the exact source file that must be modified.
+8. Describe the smallest correct correction.
+
+============================================================
+STRICT RULES
+============================================================
 
 - Do not modify tests.
-- Do not invent files.
-- Choose a file that actually exists.
 - Do not select a test file.
-- Keep the fix minimal.
+- Do not invent files.
+- Select only a file that exists in the repository.
+- Do not hardcode benchmark-specific solutions.
+- Do not assume a particular filename.
+- Do not assume a particular bug pattern.
+- The solution must generalize to valid inputs.
+- Preserve existing APIs unless the issue requires otherwise.
+- Keep the eventual change minimal.
 
 Return ONLY valid JSON.
 
 Required format:
 
 {{
-    "root_cause": "short explanation",
-    "file": "relative/path/to/source_file.py",
-    "correction": "short explanation"
+    "root_cause": "actual defect",
+    "file": "relative/path/to/source/file",
+    "correction": "precise correction"
 }}
 """
 
+    text = ask_ai(prompt)
+
+    text = clean_response(text)
+
     try:
 
-        response = client.models.generate_content(
-            model=MODEL,
-            contents=prompt
+        result = json.loads(text)
+
+    except json.JSONDecodeError:
+
+        match = re.search(
+            r"\{.*\}",
+            text,
+            re.DOTALL
         )
 
-        text = clean_response(response.text)
-
-        try:
-            result = json.loads(text)
-
-        except json.JSONDecodeError:
-
-            # Correct JSON extraction regex
-            # Correct JSON extraction regex
-            match = re.search(
-               r"\{.*\}",
-              text,
-        re.DOTALL
-    )
-            if not match:
-                raise ValueError(
-                    "Gemini did not return valid JSON."
-                )
-
-            result = json.loads(
-                match.group(0)
+        if not match:
+            raise ValueError(
+                "AI did not return valid JSON."
             )
 
-        required_fields = [
-            "root_cause",
-            "file",
-            "correction"
-        ]
-
-        for field in required_fields:
-
-            if field not in result:
-
-                raise ValueError(
-                    f"Gemini response missing field: {field}"
-                )
-
-        return result
-
-    except Exception as error:
-
-        print(
-            f"\n⚠ Gemini unavailable: {error}"
+        result = json.loads(
+            match.group(0)
         )
 
-        print(
-            "\n🤖 Using deterministic fallback analyzer..."
+    required_fields = [
+        "root_cause",
+        "file",
+        "correction"
+    ]
+
+    for field in required_fields:
+
+        if field not in result:
+            raise ValueError(
+                f"AI response missing field: {field}"
+            )
+
+    target_path = (
+        Path(repository) /
+        result["file"]
+    ).resolve()
+
+    repository_path = Path(
+        repository
+    ).resolve()
+
+    if repository_path not in target_path.parents:
+        raise ValueError(
+            "AI selected a file outside repository."
         )
 
-        return fallback_analysis(
-            issue,
-            repository
+    if not target_path.is_file():
+        raise ValueError(
+            "AI selected a file that does not exist: "
+            f"{result['file']}"
         )
+
+    validate_target_file(
+        result["file"]
+    )
+
+    return result
 
 
 # ============================================================
@@ -328,15 +386,14 @@ def read_file(
     ).resolve()
 
     if root not in file_path.parents:
-
         raise ValueError(
             "Invalid file path."
         )
 
     if not file_path.is_file():
-
         raise FileNotFoundError(
-            f"Target file does not exist: {file_name}"
+            f"Target file does not exist: "
+            f"{file_name}"
         )
 
     return file_path.read_text(
@@ -345,7 +402,7 @@ def read_file(
 
 
 # ============================================================
-# VALIDATE TARGET FILE
+# TARGET FILE VALIDATION
 # ============================================================
 
 def validate_target_file(
@@ -354,58 +411,22 @@ def validate_target_file(
 
     path = Path(file_name)
 
-    file_lower = path.name.lower()
+    filename = path.name.lower()
 
-    if file_lower.startswith("test_"):
-
+    if filename.startswith("test_"):
         raise ValueError(
             "Agent is not allowed to modify test files."
         )
 
-    if file_lower.endswith("_test.py"):
-
+    if filename.endswith("_test.py"):
         raise ValueError(
             "Agent is not allowed to modify test files."
         )
 
-
-# ============================================================
-# DETERMINISTIC FALLBACK FIX
-# ============================================================
-
-def fallback_fix(
-    target_file: str
-) -> str:
-
-    fixes = {
-
-        "calculator.py": """def divide(a, b):
-    return a / b
-""",
-
-        "discount.py": """def calculate_discount(price, discount_percent):
-    discount_amount = price * (discount_percent / 100)
-    return price - discount_amount
-""",
-
-        "statistics.py": """def calculate_average(numbers):
-    return sum(numbers) / len(numbers)
-""",
-
-        "parity_checker.py": """def is_even(number):
-    return number % 2 == 0
-"""
-    }
-
-    filename = Path(target_file).name
-
-    if filename not in fixes:
-
+    if filename == "conftest.py":
         raise ValueError(
-            f"No fallback fix available for {filename}"
+            "Agent is not allowed to modify test configuration."
         )
-
-    return fixes[filename]
 
 
 # ============================================================
@@ -419,71 +440,83 @@ def generate_fix(
     target_file: str
 ) -> str:
 
+    current_code = read_file(
+        repository,
+        target_file
+    )
+
     prompt = f"""
-You are an expert software engineer.
+You are an autonomous senior software engineer.
 
-Fix the reported bug.
+Fix the actual defect in the repository.
 
-ISSUE:
+You have already received an analysis from another
+debugging stage.
+
+Do NOT use benchmark-specific knowledge.
+
+============================================================
+ISSUE
+============================================================
 
 {issue}
 
-ROOT CAUSE:
+============================================================
+ROOT CAUSE
+============================================================
 
 {analysis["root_cause"]}
 
-CORRECTION:
+============================================================
+REQUIRED CORRECTION
+============================================================
 
 {analysis["correction"]}
 
-TARGET FILE:
+============================================================
+TARGET FILE
+============================================================
 
 {target_file}
 
-REPOSITORY:
+============================================================
+CURRENT SOURCE CODE
+============================================================
 
-{repository}
+{current_code}
 
-Return ONLY the complete corrected contents
-of this source file:
+============================================================
+RULES
+============================================================
 
-{target_file}
+1. Fix the actual defect.
+2. Preserve existing functionality.
+3. Make the smallest correct change.
+4. Do not modify tests.
+5. Do not create new files.
+6. Do not invent APIs.
+7. Do not hardcode expected test outputs.
+8. Do not write a solution for only one test case.
+9. Generalize to valid inputs.
+10. Preserve the public interface.
+11. Return the COMPLETE corrected contents of the target file.
+12. Return ONLY source code.
+13. Do not use markdown fences.
+14. Do not include explanations.
 
-Rules:
-
-- Do not modify tests.
-- Do not delete tests.
-- Do not add new files.
-- Do not add explanations.
-- Do not use markdown code fences.
-- Preserve existing functionality.
-- Make the smallest possible change.
+Generate the corrected source code now.
 """
 
-    try:
+    text = ask_ai(prompt)
 
-        response = client.models.generate_content(
-            model=MODEL,
-            contents=prompt
+    text = clean_response(text)
+
+    if not text:
+        raise ValueError(
+            "AI generated an empty fix."
         )
 
-        return clean_response(
-            response.text
-        )
-
-    except Exception as error:
-
-        print(
-            f"\n⚠ Gemini fix generation unavailable: {error}"
-        )
-
-        print(
-            "\n🤖 Using deterministic fallback fix..."
-        )
-
-        return fallback_fix(
-            target_file
-        )
+    return text
 
 
 # ============================================================
@@ -507,15 +540,14 @@ def update_file(
     ).resolve()
 
     if root not in file_path.parents:
-
         raise ValueError(
             "Invalid file path."
         )
 
     if not file_path.is_file():
-
         raise FileNotFoundError(
-            f"Target file does not exist: {file_name}"
+            f"Target file does not exist: "
+            f"{file_name}"
         )
 
     file_path.write_text(
@@ -540,15 +572,14 @@ def create_backup(
     ).resolve()
 
     if root not in file_path.parents:
-
         raise ValueError(
             "Invalid file path."
         )
 
     if not file_path.is_file():
-
         raise FileNotFoundError(
-            f"Target file does not exist: {target_file}"
+            f"Target file does not exist: "
+            f"{target_file}"
         )
 
     backup_path = file_path.with_suffix(
@@ -585,7 +616,6 @@ def restore_backup(
     )
 
     if not backup_path.is_file():
-
         raise FileNotFoundError(
             f"Backup not found: {backup_path}"
         )
@@ -626,9 +656,9 @@ def run_tests(
         )
 
         output = (
-            result.stdout
-            + "\n"
-            + result.stderr
+            result.stdout +
+            "\n" +
+            result.stderr
         )
 
         print(output)
@@ -656,12 +686,13 @@ def run_tests(
 # ============================================================
 # GIT DIFF
 # ============================================================
-def get_git_diff(repo_path: str) -> str:
-    """
-    Generate git diff safely across Windows/Linux/macOS.
-    """
+
+def get_git_diff(
+    repo_path: str
+) -> str:
 
     try:
+
         result = subprocess.run(
             [
                 "git",
@@ -676,14 +707,18 @@ def get_git_diff(repo_path: str) -> str:
         )
 
         if result.returncode != 0:
+
             return (
-                f"Unable to generate git diff: "
+                "Unable to generate git diff: "
                 f"{result.stderr.strip()}"
             )
 
-        return (result.stdout or "").strip()
+        return (
+            result.stdout or ""
+        ).strip()
 
     except Exception as error:
+
         return (
             f"Unable to generate git diff: {error}"
         )
@@ -705,76 +740,89 @@ def repair_fix(
     prompt = f"""
 You are an autonomous software debugging agent.
 
-The previous fix failed the tests.
+The previous AI-generated fix FAILED the tests.
 
-ORIGINAL ISSUE:
+You must inspect the failure and produce a better fix.
+
+Do NOT use hardcoded benchmark-specific logic.
+
+============================================================
+ORIGINAL ISSUE
+============================================================
 
 {issue}
 
-ROOT CAUSE:
+============================================================
+ROOT CAUSE
+============================================================
 
 {analysis["root_cause"]}
 
-CORRECTION:
+============================================================
+PREVIOUS CORRECTION
+============================================================
 
 {analysis["correction"]}
 
-TARGET FILE:
+============================================================
+TARGET FILE
+============================================================
 
 {target_file}
 
-CURRENT CODE:
+============================================================
+CURRENT CODE
+============================================================
 
 {current_code}
 
-TEST FAILURE:
+============================================================
+TEST FAILURE
+============================================================
 
 {test_output}
 
-Your job is to correct the implementation.
-
-Instructions:
+============================================================
+TASK
+============================================================
 
 1. Read the test failure carefully.
-2. Determine why the previous solution failed.
-3. Correct the implementation.
-4. Do not modify tests.
-5. Do not invent files.
-6. Preserve existing functionality.
-7. Make the smallest necessary change.
-8. Return ONLY the complete corrected contents of:
-   {target_file}
-9. Do not use markdown code fences.
-10. Do not add explanations.
+2. Determine why the previous fix failed.
+3. Re-evaluate the implementation.
+4. Correct the actual defect.
+5. Preserve existing functionality.
+6. Make the smallest necessary change.
+7. Generalize to valid inputs.
+
+============================================================
+STRICT RULES
+============================================================
+
+- Do not modify tests.
+- Do not create new files.
+- Do not invent APIs.
+- Do not hardcode test outputs.
+- Do not create a solution for one test case.
+- Return the COMPLETE corrected contents of:
+
+{target_file}
+
+Return ONLY source code.
+
+Do not use markdown code fences.
+Do not include explanations.
 """
 
-    # IMPORTANT:
-    # try/except MUST be inside repair_fix()
+    text = ask_ai(prompt)
 
-    try:
+    text = clean_response(text)
 
-        response = client.models.generate_content(
-            model=MODEL,
-            contents=prompt
+    if not text:
+        raise ValueError(
+            "AI generated an empty repair."
         )
 
-        return clean_response(
-            response.text
-        )
-
-    except Exception as error:
-
-        print(
-            f"\n⚠ Gemini repair unavailable: {error}"
-        )
-
-        print(
-            "\n🤖 Using deterministic fallback repair..."
-        )
-
-        return fallback_fix(
-            target_file
-        )
+    return text
 
 
 # ============================================================
@@ -800,9 +848,13 @@ def get_benchmarks():
         if not directory.name.startswith("bug_"):
             continue
 
-        issue_file = directory / "issue.txt"
+        issue_file = (
+            directory / "issue.txt"
+        )
 
-        repo_directory = directory / "repo"
+        repo_directory = (
+            directory / "repo"
+        )
 
         if (
             issue_file.is_file()
@@ -829,7 +881,6 @@ def select_benchmark():
     benchmarks = get_benchmarks()
 
     if not benchmarks:
-
         raise RuntimeError(
             "No valid benchmarks found."
         )
@@ -874,300 +925,20 @@ def select_benchmark():
 
 
 # ============================================================
-# MAIN AGENT
+# RUN AGENT
 # ============================================================
-def run_all_benchmarks():
-    """
-    Run the autonomous bug-fixing agent on every benchmark.
-    """
 
-    benchmarks = get_benchmarks()
-
-    if not benchmarks:
-        print("\n❌ No benchmarks found.")
-        return
-
-    print("\n" + "=" * 60)
-    print("🚀 RUNNING ALL BENCHMARKS AUTONOMOUSLY")
-    print("=" * 60)
-
-    results = []
-
-    for benchmark in benchmarks:
-
-        print("\n" + "=" * 60)
-        print(f"🔧 PROCESSING {benchmark.name}")
-        print("=" * 60)
-
-        repo_path = benchmark / "repo"
-        issue_path = benchmark / "issue.txt"
-
-        try:
-            # Read issue
-            issue = issue_path.read_text(
-                encoding="utf-8"
-            )
-
-            # Read repository
-            print("\n📂 Reading repository...")
-            repository = read_repository(
-                str(repo_path)
-            )
-
-            # Analyze bug
-            print("\n🧠 Analyzing bug...")
-            analysis = analyze_bug(
-                issue,
-                repository
-            )
-
-            target_file = analysis["file"]
-
-            print(
-                f"Root cause: {analysis['root_cause']}"
-            )
-            print(
-                f"Target file: {target_file}"
-            )
-            print(
-                f"Correction: {analysis['correction']}"
-            )
-
-            validate_target_file(
-                target_file
-            )
-
-            # Read original code
-            current_code = read_file(
-                str(repo_path),
-                target_file
-            )
-
-            # Create backup
-            print("\n💾 Creating backup...")
-            backup_path = create_backup(
-                str(repo_path),
-                target_file
-            )
-
-            print(
-                f"✓ Backup created: {backup_path}"
-            )
-
-            max_attempts = 3
-            test_result = None
-            verified = False
-
-            for attempt in range(
-                1,
-                max_attempts + 1
-            ):
-
-                print(
-                    f"\n🔄 Attempt "
-                    f"{attempt}/{max_attempts}"
-                )
-
-                # Generate fix
-                if attempt == 1:
-                    fixed_code = generate_fix(
-                        issue,
-                        repository,
-                        analysis,
-                        target_file
-                    )
-                else:
-                    fixed_code = repair_fix(
-                        issue,
-                        repository,
-                        analysis,
-                        target_file,
-                        current_code,
-                        test_result["output"]
-                    )
-
-                fixed_code = clean_response(
-                    fixed_code
-                )
-
-                if not fixed_code:
-                    test_result = {
-                        "passed": False,
-                        "output": "Agent returned empty code."
-                    }
-                    continue
-
-                # Apply fix
-                update_file(
-                    str(repo_path),
-                    target_file,
-                    fixed_code
-                )
-
-                current_code = fixed_code
-
-                # Run tests
-                test_result = run_tests(
-                    str(repo_path)
-                )
-
-                if test_result["passed"]:
-
-                    verified = True
-
-                    print(
-                        f"\n🎉 {benchmark.name} VERIFIED"
-                    )
-
-                    # Remove backup
-                    backup_file = Path(
-                        backup_path
-                    )
-
-                    if backup_file.exists():
-                        backup_file.unlink()
-
-                    break
-
-                print(
-                    f"\n❌ Attempt {attempt} failed."
-                )
-
-            # Rollback if unsuccessful
-            if not verified:
-
-                print(
-                    f"\n↩️ Rolling back {benchmark.name}..."
-                )
-
-                restore_backup(
-                    str(repo_path),
-                    target_file
-                )
-
-                print(
-                    f"✓ {benchmark.name} restored"
-                )
-
-            results.append({
-                "benchmark": benchmark.name,
-                "passed": verified,
-                "target_file": target_file
-            })
-
-        except Exception as error:
-
-            print(
-                f"\n❌ {benchmark.name} ERROR:"
-            )
-            print(error)
-
-            results.append({
-                "benchmark": benchmark.name,
-                "passed": False,
-                "error": str(error)
-            })
-
-    # --------------------------------------------------------
-    # FINAL SUMMARY
-    # --------------------------------------------------------
-
-    passed = sum(
-        result["passed"]
-        for result in results
-    )
-
-    total = len(results)
-
-    print("\n")
-    print("=" * 60)
-    print("🤖 AUTONOMOUS BUG FIX SUMMARY")
-    print("=" * 60)
-
-    for result in results:
-
-        status = (
-            "PASS"
-            if result["passed"]
-            else "FAIL"
-        )
-
-        print(
-            f"{result['benchmark']:<12} {status}"
-        )
-
-    print("-" * 60)
-
-    print(
-        f"Total       : {total}"
-    )
-
-    print(
-        f"Passed      : {passed}"
-    )
-
-    print(
-        f"Failed      : {total - passed}"
-    )
-
-    success_rate = (
-        (passed / total) * 100
-        if total
-        else 0
-    )
-
-    print(
-        f"Success Rate: {success_rate:.1f}%"
-    )
-
-    print("=" * 60)
-def main():
-
-    print(
-        "\n========================================"
-    )
-
-    print(
-        "🤖 AUTONOMOUS BUG FIX AGENT"
-    )
-
-    print(
-        "========================================"
-    )
-
-    # --------------------------------------------------------
-    # SELECT BUG
-    # --------------------------------------------------------
-
-    benchmark = select_benchmark()
+def run_agent(
+    benchmark: Path
+):
 
     repo_path = benchmark / "repo"
 
     issue_path = benchmark / "issue.txt"
 
-    print(
-        f"\nSelected benchmark: {benchmark.name}"
-    )
-
-    print(
-        f"Repository: {repo_path}"
-    )
-
-    print(
-        f"Issue: {issue_path}"
-    )
-
-    # --------------------------------------------------------
-    # READ ISSUE
-    # --------------------------------------------------------
-
     issue = issue_path.read_text(
         encoding="utf-8"
     )
-
-    # --------------------------------------------------------
-    # READ REPOSITORY
-    # --------------------------------------------------------
 
     print(
         "\n========== READING REPOSITORY ==========\n"
@@ -1176,10 +947,6 @@ def main():
     repository = read_repository(
         str(repo_path)
     )
-
-    # --------------------------------------------------------
-    # ANALYZE BUG
-    # --------------------------------------------------------
 
     print(
         "\n========== ANALYZING BUG ==========\n"
@@ -1191,7 +958,7 @@ def main():
     )
 
     print(
-        "Root cause:",
+        "\nRoot cause:",
         analysis["root_cause"]
     )
 
@@ -1205,10 +972,6 @@ def main():
         analysis["correction"]
     )
 
-    # --------------------------------------------------------
-    # TARGET FILE
-    # --------------------------------------------------------
-
     target_file = analysis["file"]
 
     validate_target_file(
@@ -1219,10 +982,6 @@ def main():
         str(repo_path),
         target_file
     )
-
-    # --------------------------------------------------------
-    # CREATE BACKUP
-    # --------------------------------------------------------
 
     print(
         "\n========== CREATING BACKUP ==========\n"
@@ -1236,10 +995,6 @@ def main():
     print(
         f"✓ Backup created: {backup_path}"
     )
-
-    # --------------------------------------------------------
-    # AGENT LOOP
-    # --------------------------------------------------------
 
     max_attempts = 3
 
@@ -1255,10 +1010,6 @@ def main():
             f"{attempt}/{max_attempts} ==========\n"
         )
 
-        # ----------------------------------------------------
-        # INITIAL FIX
-        # ----------------------------------------------------
-
         if attempt == 1:
 
             print(
@@ -1272,66 +1023,30 @@ def main():
                 target_file
             )
 
-        # ----------------------------------------------------
-        # SELF-CORRECTION
-        # ----------------------------------------------------
-
         else:
 
             print(
                 "\n========== SELF-CORRECTION ==========\n"
             )
 
-            print(
-                "🤖 Agent is analyzing "
-                "the previous test failure..."
-            )
-
             fixed_code = repair_fix(
                 issue,
-                repository,
+                str(repo_path),
                 analysis,
                 target_file,
                 current_code,
                 test_result["output"]
             )
 
-        # ----------------------------------------------------
-        # CLEAN RESPONSE
-        # ----------------------------------------------------
-
         fixed_code = clean_response(
             fixed_code
         )
-
-        if not fixed_code:
-
-            print(
-                "❌ Agent returned empty code."
-            )
-
-            test_result = {
-                "passed": False,
-                "output": "Agent returned empty code."
-            }
-
-            continue
-
-        # ----------------------------------------------------
-        # SHOW PROPOSED CODE
-        # ----------------------------------------------------
 
         print(
             "\n========== PROPOSED CODE ==========\n"
         )
 
-        print(
-            fixed_code
-        )
-
-        # ----------------------------------------------------
-        # APPLY FIX
-        # ----------------------------------------------------
+        print(fixed_code)
 
         print(
             "\n========== APPLYING FIX ==========\n"
@@ -1349,10 +1064,6 @@ def main():
             f"✓ Fix applied to {target_file}"
         )
 
-        # ----------------------------------------------------
-        # SHOW DIFF
-        # ----------------------------------------------------
-
         print(
             "\n========== GENERATED DIFF ==========\n"
         )
@@ -1361,27 +1072,14 @@ def main():
             str(repo_path)
         )
 
-        if diff:
-
-            print(diff)
-
-        else:
-
-            print(
-                "No git changes detected."
-            )
-
-        # ----------------------------------------------------
-        # RUN TESTS
-        # ----------------------------------------------------
+        print(
+            diff if diff else
+            "No git changes detected."
+        )
 
         test_result = run_tests(
             str(repo_path)
         )
-
-        # ----------------------------------------------------
-        # SUCCESS
-        # ----------------------------------------------------
 
         if test_result["passed"]:
 
@@ -1401,8 +1099,6 @@ def main():
                 f"✓ Target file: {target_file}"
             )
 
-            # Remove backup after successful verification
-
             backup_file = Path(
                 backup_path
             )
@@ -1412,82 +1108,124 @@ def main():
                 backup_file.unlink()
 
                 print(
-                    "✓ Backup removed after "
-                    "successful verification"
+                    "✓ Backup removed"
                 )
 
             print(
                 "========================================"
             )
 
-            return
-
-        # ----------------------------------------------------
-        # FAILURE
-        # ----------------------------------------------------
+            return True
 
         print(
-            "\n❌ Tests failed."
+            f"\n❌ Attempt {attempt} failed."
         )
 
-        current_code = read_file(
+        if attempt < max_attempts:
+
+            current_code = read_file(
+                str(repo_path),
+                target_file
+            )
+
+    print(
+        "\n========================================"
+    )
+
+    print(
+        "❌ FIX NOT VERIFIED"
+    )
+
+    print(
+        "Maximum attempts reached."
+    )
+
+    print(
+        "\n========== ROLLING BACK ==========\n"
+    )
+
+    try:
+
+        restore_backup(
             str(repo_path),
             target_file
         )
 
-        # ----------------------------------------------------
-        # MAX ATTEMPTS
-        # ----------------------------------------------------
+        print(
+            f"✓ Original code restored for "
+            f"{target_file}"
+        )
 
-        if attempt == max_attempts:
+    except Exception as error:
 
-            print(
-                "\n========================================"
-            )
+        print(
+            f"❌ Rollback failed: {error}"
+        )
 
-            print(
-                "❌ FIX NOT VERIFIED"
-            )
+    print(
+        "========================================"
+    )
 
-            print(
-                "Maximum attempts reached."
-            )
-
-            # ------------------------------------------------
-            # ROLLBACK
-            # ------------------------------------------------
-
-            print(
-                "\n========== ROLLING BACK FIX ==========\n"
-            )
-
-            try:
-
-                restore_backup(
-                    str(repo_path),
-                    target_file
-                )
-
-                print(
-                    f"✓ Original code restored for "
-                    f"{target_file}"
-                )
-
-            except Exception as error:
-
-                print(
-                    f"❌ Rollback failed: {error}"
-                )
-
-            print(
-                "========================================"
-            )
-
-            return
+    return False
 
 
 # ============================================================
-# PROGRAM ENTRY POINT
+# MAIN
+# ============================================================
+
+def main():
+
+    print(
+        "\n========================================"
+    )
+
+    print(
+        "🤖 AUTONOMOUS BUG FIX AGENT"
+    )
+
+    print(
+        "========================================"
+    )
+
+    benchmark = select_benchmark()
+
+    print(
+        f"\nSelected benchmark: {benchmark.name}"
+    )
+
+    print(
+        f"Repository: {benchmark / 'repo'}"
+    )
+
+    print(
+        f"Issue: {benchmark / 'issue.txt'}"
+    )
+
+    try:
+
+        run_agent(
+            benchmark
+        )
+
+    except Exception as error:
+
+        print(
+            "\n========================================"
+        )
+
+        print(
+            "❌ AGENT ERROR"
+        )
+
+        print(
+            "========================================"
+        )
+
+        print(error)
+
+
+# ============================================================
+# ENTRY POINT
 # ============================================================
 
 if __name__ == "__main__":
