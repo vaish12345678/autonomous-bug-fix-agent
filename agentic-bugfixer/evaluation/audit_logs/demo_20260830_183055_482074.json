@@ -1,0 +1,19 @@
+{
+    "timestamp": "2026-08-30T18:30:55.482074+00:00",
+    "benchmark": "demo",
+    "issue": "Demo bug",
+    "target_file": "demo.py",
+    "root_cause": "Demo root cause",
+    "correction": "Demo correction",
+    "risk": {
+        "level": "LOW",
+        "score": 0
+    },
+    "acceptance": {
+        "accepted": true
+    },
+    "verification": {
+        "tests_passed": true,
+        "attempts": 1
+    }
+}
