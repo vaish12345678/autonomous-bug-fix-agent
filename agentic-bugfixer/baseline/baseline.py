@@ -8,10 +8,26 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 BENCHMARKS_DIR = ROOT / "benchmarks"
-PATCHES_DIR = BENCHMARKS_DIR / "patches"
 
 RESULTS_DIR = ROOT / "evaluation" / "results"
 RESULTS_FILE = RESULTS_DIR / "baseline_results.json"
+
+BASE_COMMIT = "ea8e62f"
+
+TARGET_FILES = {
+    "bug_01": "calculator.py",
+    "bug_02": "discount.py",
+    "bug_03": "statistics.py",
+    "bug_04": "agent.py",
+    "bug_05": "positive_checker.py",
+    "bug_06": "agent.py",
+    "bug_07": "agent.py",
+    "bug_08": "agent.py",
+    "bug_09": "agent.py",
+    "bug_10": "agent.py",
+    "bug_11": "agent.py",
+    "bug_12": "agent.py",
+}
 
 
 def get_benchmarks():
@@ -25,32 +41,23 @@ def get_benchmarks():
     )
 
 
-def find_patch(benchmark_name):
-    patches = list(
-        PATCHES_DIR.glob(
-            f"{benchmark_name}_*.patch"
-        )
+def get_buggy_source(benchmark_name, file_name):
+    git_path = (
+        f"{BASE_COMMIT}^:"
+        f"agentic-bugfixer/benchmarks/"
+        f"{benchmark_name}/repo/{file_name}"
     )
 
-    return patches[0] if patches else None
-
-
-def apply_patch(repo_dir, patch_file):
     result = subprocess.run(
-        [
-            "git",
-            "apply",
-            str(patch_file.resolve())
-        ],
-        cwd=repo_dir,
+        ["git", "show", git_path],
         capture_output=True,
         text=True
     )
 
     if result.returncode != 0:
-        return False, result.stderr.strip()
+        raise RuntimeError(result.stderr.strip())
 
-    return True, ""
+    return result.stdout
 
 
 def run_tests(repo_dir):
@@ -78,57 +85,33 @@ def run_tests(repo_dir):
 
 def run_benchmark(benchmark_dir):
     benchmark_name = benchmark_dir.name
-    original_repo = benchmark_dir / "repo"
-
-    patch_file = find_patch(benchmark_name)
-
-    if patch_file is None:
-        return {
-            "benchmark": benchmark_name,
-            "passed": False,
-            "patch_applied": False,
-            "runtime_seconds": 0,
-            "output": "No baseline patch found."
-        }
-
-    temp_repo = benchmark_dir / "_baseline_repo"
-
-    if temp_repo.exists():
-        shutil.rmtree(temp_repo)
-
-    shutil.copytree(
-        original_repo,
-        temp_repo
-    )
+    repo_dir = benchmark_dir / "repo"
+    file_name = TARGET_FILES[benchmark_name]
+    target_file = repo_dir / file_name
 
     start = time.perf_counter()
 
+    original_content = target_file.read_text(
+        encoding="utf-8"
+    )
+
     try:
-        patch_applied, patch_error = apply_patch(
-            temp_repo,
-            patch_file
+        buggy_content = get_buggy_source(
+            benchmark_name,
+            file_name
         )
 
-        if not patch_applied:
-            return {
-                "benchmark": benchmark_name,
-                "passed": False,
-                "patch_applied": False,
-                "runtime_seconds": round(
-                    time.perf_counter() - start,
-                    4
-                ),
-                "output": patch_error
-            }
-
-        passed, output = run_tests(
-            temp_repo
+        # Restore the benchmark to its original buggy state.
+        target_file.write_text(
+            buggy_content,
+            encoding="utf-8"
         )
+
+        passed, output = run_tests(repo_dir)
 
         return {
             "benchmark": benchmark_name,
             "passed": passed,
-            "patch_applied": True,
             "runtime_seconds": round(
                 time.perf_counter() - start,
                 4
@@ -137,9 +120,10 @@ def run_benchmark(benchmark_dir):
         }
 
     finally:
-        shutil.rmtree(
-            temp_repo,
-            ignore_errors=True
+        # Always restore the current fixed benchmark.
+        target_file.write_text(
+            original_content,
+            encoding="utf-8"
         )
 
 
@@ -152,10 +136,11 @@ def main():
 
     print(
         "\nBaseline strategy:"
-        "\n  1. Apply the predefined single-pass patch"
+        "\n  1. Restore the original buggy implementation"
         "\n  2. Run the repository tests"
         "\n  3. No autonomous analysis"
-        "\n  4. No retry loop"
+        "\n  4. No AI patch generation"
+        "\n  5. No retry loop"
     )
 
     benchmarks = get_benchmarks()
@@ -216,10 +201,9 @@ def main():
 
     report = {
         "baseline": {
-            "strategy": (
-                "single_pass_predefined_patch"
-            ),
+            "strategy": "single_pass_no_repair",
             "autonomous_analysis": False,
+            "ai_patch_generation": False,
             "retry_loop": False
         },
         "summary": {
