@@ -189,7 +189,6 @@ def calculate_benchmark_stats(results):
 # ============================================================
 # CALCULATE AUDIT STATISTICS
 # ============================================================
-
 def calculate_audit_stats(logs):
 
     total_runs = len(logs)
@@ -202,6 +201,15 @@ def calculate_audit_stats(logs):
         if not isinstance(log, dict):
             continue
 
+        # ----------------------------------------------------
+        # SUCCESS DETECTION
+        # ----------------------------------------------------
+
+        verification = log.get(
+            "verification",
+            {}
+        )
+
         success = (
             log.get("success")
             or log.get("successful")
@@ -211,6 +219,19 @@ def calculate_audit_stats(logs):
                 "passed",
                 "PASSED"
             }
+            or verification.get(
+                "tests_passed",
+                False
+            )
+        )
+
+        # ----------------------------------------------------
+        # ACCEPTANCE DETECTION
+        # ----------------------------------------------------
+
+        acceptance = log.get(
+            "acceptance",
+            {}
         )
 
         accepted = (
@@ -220,6 +241,10 @@ def calculate_audit_stats(logs):
                 "accepted",
                 "ACCEPTED"
             }
+            or acceptance.get(
+                "accepted",
+                False
+            )
         )
 
         if success:
@@ -247,7 +272,6 @@ def calculate_audit_stats(logs):
         "success_rate": success_rate,
         "acceptance_rate": acceptance_rate
     }
-
 
 # ============================================================
 # SYSTEM SCORE

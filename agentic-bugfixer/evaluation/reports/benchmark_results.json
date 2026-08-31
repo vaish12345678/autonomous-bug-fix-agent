@@ -1,41 +1,83 @@
 {
     "summary": {
-        "total_benchmarks": 5,
-        "passed": 5,
+        "total_benchmarks": 12,
+        "passed": 12,
         "failed": 0,
         "success_rate": 100.0,
-        "average_runtime_seconds": 1.89
+        "average_runtime_seconds": 0.86
     },
     "benchmarks": [
         {
             "benchmark": "bug_01",
             "passed": true,
-            "runtime_seconds": 3.08,
-            "output": "..                                                                       [100%]\n2 passed in 0.03s"
+            "runtime_seconds": 0.9,
+            "output": "..                                                                       [100%]\n2 passed in 0.01s"
         },
         {
             "benchmark": "bug_02",
             "passed": true,
-            "runtime_seconds": 1.61,
-            "output": "....                                                                     [100%]\n4 passed in 0.03s"
+            "runtime_seconds": 0.9,
+            "output": "....                                                                     [100%]\n4 passed in 0.01s"
         },
         {
             "benchmark": "bug_03",
             "passed": true,
-            "runtime_seconds": 1.55,
-            "output": "...                                                                      [100%]\n3 passed in 0.03s"
+            "runtime_seconds": 0.86,
+            "output": "...                                                                      [100%]\n3 passed in 0.01s"
         },
         {
             "benchmark": "bug_04",
             "passed": true,
-            "runtime_seconds": 1.58,
-            "output": "...                                                                      [100%]\n3 passed in 0.03s"
+            "runtime_seconds": 0.86,
+            "output": "...                                                                      [100%]\n3 passed in 0.01s"
         },
         {
             "benchmark": "bug_05",
             "passed": true,
-            "runtime_seconds": 1.64,
-            "output": "...                                                                      [100%]\n3 passed in 0.03s"
+            "runtime_seconds": 0.86,
+            "output": "...                                                                      [100%]\n3 passed in 0.01s"
+        },
+        {
+            "benchmark": "bug_06",
+            "passed": true,
+            "runtime_seconds": 0.85,
+            "output": ".                                                                        [100%]\n1 passed in 0.01s"
+        },
+        {
+            "benchmark": "bug_07",
+            "passed": true,
+            "runtime_seconds": 0.84,
+            "output": ".                                                                        [100%]\n1 passed in 0.01s"
+        },
+        {
+            "benchmark": "bug_08",
+            "passed": true,
+            "runtime_seconds": 0.86,
+            "output": ".                                                                        [100%]\n1 passed in 0.01s"
+        },
+        {
+            "benchmark": "bug_09",
+            "passed": true,
+            "runtime_seconds": 0.85,
+            "output": ".                                                                        [100%]\n1 passed in 0.01s"
+        },
+        {
+            "benchmark": "bug_10",
+            "passed": true,
+            "runtime_seconds": 0.84,
+            "output": ".                                                                        [100%]\n1 passed in 0.01s"
+        },
+        {
+            "benchmark": "bug_11",
+            "passed": true,
+            "runtime_seconds": 0.87,
+            "output": ".                                                                        [100%]\n1 passed in 0.01s"
+        },
+        {
+            "benchmark": "bug_12",
+            "passed": true,
+            "runtime_seconds": 0.85,
+            "output": ".                                                                        [100%]\n1 passed in 0.01s"
         }
     ]
 }

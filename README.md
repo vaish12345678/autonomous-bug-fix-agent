@@ -1,38 +1,38 @@
 # 🤖 Autonomous Bug Fix Agent
 
-An agentic software engineering system that automatically investigates failing Python repositories, identifies the root cause, generates a minimal repair, validates the proposed change, safely applies it, runs tests, learns from failures, and verifies the final result.
+An agentic software engineering system that automatically investigates failing Python repositories, identifies the root cause, generates a repair, validates the proposed change, safely applies it, runs tests, and verifies the final result.
 
-The project is designed around a simple principle:
+The project is built around one principle:
 
 > **AI should reason about the bug, but deterministic controls should decide whether a code change is safe to execute.**
 
-The system combines AI-powered debugging with deterministic validation, patch safety checks, controlled execution, rollback, bounded retries, human approval, failure classification, evaluation, and agent trajectory tracking.
+The system combines AI-powered debugging with deterministic validation, patch safety checks, controlled execution, backup/recovery, bounded retries, human approval, failure classification, benchmark evaluation, and agent trajectory tracking.
 
 ---
 
-## 🎯 Problem
+# 🎯 Problem
 
-### Who has this problem?
+## Who has this problem?
 
-Software developers and engineering teams regularly encounter small implementation defects that cause tests to fail.
+Software developers and engineering teams regularly encounter implementation defects that cause tests to fail.
 
-A developer typically has to:
+A developer typically needs to:
 
 1. Understand the reported issue.
 2. Inspect the repository.
 3. Identify the relevant source file.
-4. Understand the root cause.
+4. Determine the root cause.
 5. Design a correction.
 6. Modify the source code.
-7. Run the test suite.
-8. Investigate failures if the fix is incorrect.
-9. Roll back unsafe or unsuccessful changes.
+7. Run the tests.
+8. Investigate failures when the repair is incorrect.
+9. Recover from unsuccessful changes.
 
 For repetitive debugging tasks, this creates unnecessary engineering overhead.
 
-### The bottleneck
+## The Bottleneck
 
-The hard part of autonomous debugging is not simply generating code.
+The difficult part of autonomous debugging is not simply generating code.
 
 A useful bug-fixing agent must be able to:
 
@@ -41,19 +41,19 @@ A useful bug-fixing agent must be able to:
 * reason about the root cause,
 * generate an appropriate repair,
 * avoid modifying tests,
-* reject unsafe changes,
 * validate generated code,
+* reject unsafe patches,
 * execute the real test suite,
-* interpret test failures,
+* interpret failures,
 * retry when appropriate,
 * recover from unsuccessful repairs,
-* and provide evidence explaining how it reached the final result.
+* and provide evidence explaining the final result.
 
 ---
 
 # 💡 Solution
 
-The **Autonomous Bug Fix Agent** converts the debugging process into a controlled agentic workflow.
+The **Autonomous Bug Fix Agent** converts this debugging process into a controlled agentic workflow.
 
 ```text
 Issue
@@ -83,12 +83,15 @@ Patch Safety Gate
 Human Approval / Controlled Execution
   │
   ▼
+Backup
+  │
+  ▼
 Patch Application
   │
   ▼
 Test Execution
   │
-  ├─────────────── PASS ───────────────► Final Verification
+  ├──────── PASS ────────► Final Verification
   │
   ▼
 Failure Classification
@@ -96,16 +99,17 @@ Failure Classification
   ▼
 Recovery / Self-Correction
   │
-  └──────────────► Bounded Retry
-                         │
-                         ▼
-                  Final Verification
-                         │
-                         ▼
-               Trajectory + Evidence
+  ▼
+Bounded Retry
+  │
+  ▼
+Final Verification
+  │
+  ▼
+Trajectory + Evidence
 ```
 
-The system does **not** blindly allow an LLM to edit a repository.
+The system does not blindly allow an LLM to modify a repository.
 
 Instead:
 
@@ -123,6 +127,8 @@ Real test feedback
 Recovery / retry
      ↓
 Verified result
+     ↓
+Observable trajectory
 ```
 
 This separation between probabilistic reasoning and deterministic verification is the central design principle of the project.
@@ -133,13 +139,13 @@ This separation between probabilistic reasoning and deterministic verification i
 
 ## 1. Repository Reader
 
-The agent loads the selected benchmark repository and gathers the relevant repository context required for debugging.
+The agent loads the selected benchmark repository and gathers the relevant context required for debugging.
 
-The repository contains:
+Each benchmark contains:
 
-* the buggy implementation,
 * an issue description,
-* and tests that define the expected behavior.
+* a buggy implementation,
+* and tests defining the expected behavior.
 
 ---
 
@@ -156,13 +162,15 @@ Example:
 
 ========== RUNNING TESTS ==========
 
-F                                                                        [100%]
+F
 
 FAILED test_agent.py::test_divide
 assert 20 == 5
+
+✓ Initial tests failed as expected.
 ```
 
-This prevents the system from treating an already-passing repository as a successful repair.
+This prevents an already-passing repository from being incorrectly treated as a successful repair.
 
 ---
 
@@ -178,15 +186,13 @@ Example:
 
 ```text
 Root cause:
-The divide function uses the multiplication operator
-instead of the division operator.
+The divide function uses multiplication instead of division.
 
 File:
 agent.py
 
 Correction:
-Change `return a * b`
-to `return a / b`.
+Change `return a * b` to `return a / b`.
 ```
 
 The AI is responsible for reasoning about **what is wrong and how it should be repaired**.
@@ -197,15 +203,13 @@ The AI is responsible for reasoning about **what is wrong and how it should be r
 
 The agent identifies the source file that should be modified.
 
-This prevents unnecessary repository-wide modifications.
-
-The intended repair is focused on the source implementation rather than changing tests to make them pass.
+The repair is focused on the implementation rather than modifying tests to make them pass.
 
 ---
 
 ## 5. Patch Generation
 
-The AI generates the corrected contents of the target source file.
+The AI generates the corrected source code.
 
 The generation process is constrained to discourage:
 
@@ -229,8 +233,6 @@ The system therefore places deterministic controls around AI-generated patches.
 
 Generated Python source is validated before it can be applied.
 
-If the generated source contains invalid Python syntax, it is rejected.
-
 ```text
 Generated patch
       ↓
@@ -239,6 +241,8 @@ Python syntax validation
 PASS → continue
 FAIL → reject / retry
 ```
+
+Invalid Python source is rejected before repository modification.
 
 ---
 
@@ -258,33 +262,37 @@ It checks conditions including:
 Example:
 
 ```text
-PATCH SAFETY GATE
+========== PATCH SAFETY GATE ==========
 
 Safety status : SAFE
 Safety reason : Patch passed safety validation.
 Changed lines : 1
+Original lines: 2
+Proposed lines: 2
+
+✓ Patch passed safety gate.
 ```
 
-This provides deterministic control around an AI-generated modification.
+This provides deterministic control around AI-generated modifications.
 
 ---
 
-## 8. Backup and Rollback
+## 8. Backup and Recovery
 
 Before changing the target source file, the system creates a backup.
 
 ```text
-Creating backup
-      ↓
+Create backup
+     ↓
 Apply patch
-      ↓
+     ↓
 Run tests
-      ↓
+     ↓
 PASS → keep repair
-FAIL → recovery / rollback
+FAIL → recover / rollback
 ```
 
-This prevents unsuccessful AI-generated modifications from permanently damaging the benchmark repository.
+This provides a recovery path when an AI-generated repair is unsuccessful.
 
 ---
 
@@ -292,7 +300,7 @@ This prevents unsuccessful AI-generated modifications from permanently damaging 
 
 Consequential repository modifications can pass through a human approval checkpoint before execution.
 
-The trajectory records the decision.
+The decision is recorded in the trajectory.
 
 Example:
 
@@ -305,7 +313,7 @@ Example:
 }
 ```
 
-This keeps the execution controlled while still allowing the AI to perform the reasoning-intensive parts of the workflow.
+This keeps consequential execution controlled while allowing the agent to perform the reasoning-intensive parts of the workflow.
 
 ---
 
@@ -317,17 +325,21 @@ After the patch is applied, the agent executes the actual repository tests.
 
 A repair is not considered successful merely because the generated code is syntactically valid.
 
-The final implementation must pass the repository's tests.
+The implementation must pass the repository's tests.
 
 Example:
 
 ```text
-RUNNING TESTS
+========== RUNNING TESTS ==========
 
 .                                                                        [100%]
+
 1 passed in 0.01s
 
-VERIFIED FIX
+==================================================
+🎉 VERIFIED FIX
+✓ Tests passed on attempt 1
+==================================================
 ```
 
 ---
@@ -347,11 +359,7 @@ Supported categories include:
 * test failure,
 * unknown failure.
 
-This gives the recovery process more useful information than simply saying:
-
-```text
-"Something went wrong."
-```
+This turns raw execution failure into structured information for the recovery process.
 
 ---
 
@@ -359,7 +367,7 @@ This gives the recovery process more useful information than simply saying:
 
 The system supports bounded repair attempts.
 
-The current configuration allows up to three AI repair attempts.
+The current configuration allows up to **three AI repair attempts**.
 
 ```text
 Attempt 1
@@ -381,7 +389,7 @@ Attempt 2
 ...
 ```
 
-The retry mechanism is intentionally bounded to avoid uncontrolled agent loops and unnecessary API usage.
+The retry mechanism is intentionally bounded to prevent uncontrolled agent loops and unnecessary API usage.
 
 ---
 
@@ -389,72 +397,64 @@ The retry mechanism is intentionally bounded to avoid uncontrolled agent loops a
 
 ## Primary Metric
 
-The primary outcome metric for this project is:
+The primary outcome metric is:
 
 > **Percentage of benchmark repositories whose tests pass after the repair workflow.**
 
 The benchmark suite contains **12 independent bug cases**.
 
-The same benchmark cases are used when comparing the system during development.
+The same benchmark suite is used for deterministic evaluation.
 
-The hackathon guidance recommends defining a primary metric, evaluating the same cases for baseline and final solutions, and using ten or more cases when the task allows it.
+## Current Evaluation Result
 
----
-
-## Baseline vs Final Evaluation
-
-During development, the benchmark suite initially produced:
-
-```text
-Total Benchmarks : 12
-Passed           : 6
-Failed           : 6
-Success Rate     : 50.00%
-```
-
-After correcting the benchmark implementations and completing the reliability improvements, the final deterministic benchmark evaluation produced:
+The latest evaluation completed successfully across all 12 benchmarks:
 
 ```text
 Total Benchmarks : 12
 Passed           : 12
 Failed           : 0
-Success Rate     : 100.00%
-Average Runtime  : approximately 0.84s / benchmark
+Success Rate     : 100.0%
+
+Total Runtime    : 11.5429s
+Average Runtime  : 0.9619s
 ```
 
 ### Evaluation Summary
 
-| Metric       | Initial Evaluation | Final Evaluation |
-| ------------ | -----------------: | ---------------: |
-| Benchmarks   |                 12 |               12 |
-| Passed       |                  6 |               12 |
-| Failed       |                  6 |                0 |
-| Failed       |                  6 |                0 |
-| Success Rate |             50.00% |      **100.00%** |
+| Metric          | Final Result |
+| --------------- | -----------: |
+| Benchmarks      |           12 |
+| Passed          |           12 |
+| Failed          |            0 |
+| Success Rate    |  **100.00%** |
+| Total Runtime   |     11.5429s |
+| Average Runtime |      0.9619s |
 
-The final result is backed by:
+The latest evaluation was executed using:
 
-```text
-evaluation/reports/benchmark_results.json
+```bash
+python evaluation/evaluate.py
 ```
 
-The important point is that the final result is not based on a single successful example. It is measured across the complete 12-case benchmark suite.
+The detailed output is stored in:
+
+```text
+evaluation/results/evaluation_results.json
+```
+
+> **Important:** The deterministic benchmark evaluation does not make AI API calls. It verifies the benchmark implementations independently.
 
 ---
 
 # 📈 Improvement Changelog
 
-The project was developed incrementally.
-
-Each iteration addressed a reliability limitation discovered during development.
-
----
+The project was developed incrementally, with each iteration addressing a reliability limitation discovered during development.
 
 ## Iteration 0 — Basic Repair Loop
 
-### Initial approach
+### Change
 
-The initial workflow focused primarily on:
+Started with a basic workflow:
 
 ```text
 Issue
@@ -470,7 +470,7 @@ Tests
 
 ### Limitation
 
-This approach relied too heavily on the AI-generated patch being correct and safe.
+The basic approach relied heavily on the AI-generated patch being correct.
 
 A generated patch could be:
 
@@ -478,11 +478,11 @@ A generated patch could be:
 * unsafe,
 * too large,
 * targeted at the wrong location,
-* or incorrect despite looking reasonable.
+* or behaviorally incorrect.
 
 ### Decision
 
-Improve the system with deterministic controls around AI-generated code.
+Add deterministic controls around AI-generated code.
 
 ---
 
@@ -495,10 +495,6 @@ Added deterministic Python syntax validation before applying generated source.
 ### Why
 
 Generated code should not be applied simply because the model produced it.
-
-### Result
-
-Invalid Python source can be rejected before repository modification.
 
 ### Decision
 
@@ -523,11 +519,7 @@ The safety layer checks:
 
 ### Why
 
-Syntax correctness does not guarantee that a patch is safe.
-
-### Result
-
-AI-generated patches are checked by deterministic rules before execution.
+Syntax correctness does not guarantee patch safety.
 
 ### Decision
 
@@ -539,15 +531,11 @@ AI-generated patches are checked by deterministic rules before execution.
 
 ### Change
 
-Added automatic backups and rollback support.
+Added automatic backups and recovery support.
 
 ### Why
 
-An autonomous system must have a recovery path when a generated repair fails.
-
-### Result
-
-The system can restore the previous implementation rather than leaving an unsuccessful patch in place.
+An autonomous system needs a recovery path when a generated repair fails.
 
 ### Decision
 
@@ -563,22 +551,7 @@ Added structured failure classification.
 
 ### Why
 
-A failed test should become actionable feedback for the next repair attempt.
-
-### Result
-
-Failures are classified into categories such as:
-
-```text
-timeout
-syntax error
-import error
-name error
-type error
-attribute error
-test failure
-unknown failure
-```
+A failed test should become actionable information for the next repair attempt.
 
 ### Decision
 
@@ -594,11 +567,7 @@ Added bounded retry and self-correction.
 
 ### Why
 
-A repair that fails should provide feedback for another attempt, but the agent should not enter an uncontrolled retry loop.
-
-### Result
-
-The system can use observed execution failures to guide another repair attempt, with a maximum number of attempts.
+A failed repair can provide useful feedback for another attempt, but the agent should not enter an uncontrolled retry loop.
 
 ### Decision
 
@@ -616,10 +585,6 @@ Added a human approval checkpoint before consequential patch execution.
 
 Repository modification is a consequential action and should remain controlled.
 
-### Result
-
-Approval is recorded in the agent trajectory before the patch is applied.
-
 ### Decision
 
 **KEPT**
@@ -632,13 +597,13 @@ Approval is recorded in the agent trajectory before the patch is applied.
 
 Added structured trajectory recording.
 
-The system records:
+The system records events including:
 
 * repository reading,
-* AI bug analysis,
+* AI analysis,
 * target selection,
 * patch generation,
-* patch validation,
+* validation,
 * human approval,
 * patch application,
 * test results,
@@ -648,11 +613,50 @@ The system records:
 
 ### Why
 
-A final "PASS" does not explain how an autonomous agent reached that result.
+A final `PASS` does not explain how an autonomous agent reached that result.
+
+### Decision
+
+**KEPT**
+
+---
+
+## Iteration 8 — Expanded Benchmark Suite
+
+### Change
+
+Expanded the benchmark suite to **12 independent bug cases**.
+
+### Why
+
+A larger benchmark suite provides stronger evidence than demonstrating the workflow on a single bug.
 
 ### Result
 
-The system produces an auditable execution history.
+The system can evaluate all 12 benchmarks automatically.
+
+### Decision
+
+**KEPT**
+
+---
+
+## Iteration 9 — Evaluation Statistics Correction
+
+### Change
+
+Corrected the evaluation statistics and verified the benchmark runner against the complete benchmark suite.
+
+### Result
+
+The current deterministic evaluation reports:
+
+```text
+12 benchmarks
+12 passed
+0 failed
+100.00% success rate
+```
 
 ### Decision
 
@@ -668,27 +672,27 @@ Representative trajectories are stored under:
 evaluation/trajectories/
 ```
 
-A typical trajectory contains events such as:
+A typical trajectory follows:
 
 ```text
 RUN_STARTED
-      ↓
+     ↓
 Read repository
-      ↓
+     ↓
 AI_DECISION
-      ↓
+     ↓
 Generate patch
-      ↓
+     ↓
 Validate patch
-      ↓
+     ↓
 HUMAN_CHECKPOINT
-      ↓
+     ↓
 Apply patch
-      ↓
+     ↓
 TARGET_MODIFIED
-      ↓
+     ↓
 TEST_RESULT
-      ↓
+     ↓
 FINAL_RESULT
 ```
 
@@ -733,7 +737,7 @@ benchmarks/
 └── bug_12/
 ```
 
-Each benchmark follows the same basic structure:
+Each benchmark follows the same structure:
 
 ```text
 bug_xx/
@@ -753,12 +757,12 @@ The project is designed to be reproducible from a clean Python environment.
 
 ## Requirements
 
-Recommended environment:
+Recommended:
 
 * Python 3.12+
 * Git
-* Internet connection for AI-powered repair execution
-* Gemini API key for AI requests
+* Internet connection for AI-powered repair
+* Gemini API key
 
 Install dependencies:
 
@@ -785,11 +789,7 @@ MAX_AI_RETRIES=3
 AI_RETRY_DELAY=5
 ```
 
-### Important
-
-Do not commit the `.env` file or API credentials to the repository.
-
-Credentials should remain outside the submission.
+Do not commit `.env` or API credentials to the repository.
 
 ---
 
@@ -801,7 +801,7 @@ From the project root:
 python -m backend.agent
 ```
 
-The agent displays available benchmarks:
+The agent displays the available benchmarks:
 
 ```text
 ========== AVAILABLE BUGS ==========
@@ -813,9 +813,9 @@ The agent displays available benchmarks:
 12. bug_12
 ```
 
-Select a benchmark number.
+Select a benchmark.
 
-For example:
+Example:
 
 ```text
 Select bug number: 8
@@ -845,6 +845,38 @@ RUNNING TESTS
 VERIFIED FIX
 ```
 
+### Example: bug_08
+
+The benchmark initially contains:
+
+```python
+def divide(a, b):
+    return a * b
+```
+
+The test fails:
+
+```text
+assert 20 == 5
+```
+
+The agent identifies the root cause and generates:
+
+```python
+def divide(a, b):
+    return a / b
+```
+
+The generated code passes syntax validation and the patch safety gate.
+
+The final test passes:
+
+```text
+1 passed
+```
+
+This demonstrates the complete issue → reasoning → repair → verification loop.
+
 ---
 
 # 🧪 Run Full Benchmark Evaluation
@@ -852,29 +884,30 @@ VERIFIED FIX
 Run:
 
 ```bash
-python -m backend.evaluation.benchmark_runner
+python evaluation/evaluate.py
 ```
 
-Expected final output:
+Expected summary:
 
 ```text
-======================================================================
-                    FINAL RESULTS
-======================================================================
+============================================================
+🤖 AUTONOMOUS BUG FIX AGENT
+       EVALUATION SUMMARY
+============================================================
 
 Total Benchmarks : 12
 Passed           : 12
 Failed           : 0
-Success Rate     : 100.00%
-Average Runtime  : approximately 0.84s
+Success Rate     : 100.0%
 
-🏆 SYSTEM STATUS: EXCELLENT
+Total Runtime    : approximately 11.5s
+Average Runtime  : approximately 0.96s
 ```
 
 The detailed evaluation report is written to:
 
 ```text
-evaluation/reports/benchmark_results.json
+evaluation/results/evaluation_results.json
 ```
 
 ---
@@ -884,20 +917,13 @@ evaluation/reports/benchmark_results.json
 For example:
 
 ```bash
-cd benchmarks/bug_08/repo
-python -m pytest -q
+python -m pytest -q .\benchmarks\bug_08\repo
 ```
 
 Expected:
 
 ```text
 1 passed
-```
-
-Return to the project root:
-
-```bash
-cd ../../..
 ```
 
 ---
@@ -910,12 +936,10 @@ cd ../../..
 python -m compileall backend -q
 ```
 
----
-
 ## Verify benchmark discovery
 
 ```bash
-python -c "from backend.evaluation.benchmark_runner import get_benchmarks; b=get_benchmarks(); print('BENCHMARKS:', len(b)); print('OK' if len(b)==12 else 'ERROR')"
+python -c "from evaluation.evaluate import get_benchmarks; b=get_benchmarks(); print('BENCHMARKS:', len(b)); print('OK' if len(b)==12 else 'ERROR')"
 ```
 
 Expected:
@@ -927,64 +951,45 @@ OK
 
 ---
 
-## Verify trajectory integration
-
-```bash
-python -c "from backend.trajectory.integration.agent_integration import AgentTrajectoryIntegration; print('AGENT INTEGRATION IMPORT PASSED')"
-```
-
-Expected:
-
-```text
-AGENT INTEGRATION IMPORT PASSED
-```
-
----
-
 # 📁 Project Structure
 
 ```text
 autonomous-bug-fix-agent/
 │
-├── agentic-bugfixer/
-│   │
-│   ├── backend/
-│   │   ├── agent.py
-│   │   ├── patcher.py
-│   │   │
-│   │   ├── approval/
-│   │   ├── audit/
-│   │   ├── evaluation/
-│   │   ├── execution/
-│   │   ├── explainability/
-│   │   ├── git/
-│   │   ├── quality/
-│   │   ├── recovery/
-│   │   ├── reporting/
-│   │   └── trajectory/
-│   │       └── integration/
-│   │
-│   ├── benchmarks/
-│   │   ├── bug_01/
-│   │   ├── bug_02/
-│   │   ├── bug_03/
-│   │   ├── ...
-│   │   └── bug_12/
-│   │
-│   ├── evaluation/
-│   │   ├── approvals/
-│   │   ├── audit_logs/
-│   │   ├── explanations/
-│   │   ├── recovery/
-│   │   ├── repair_reports/
-│   │   ├── reports/
-│   │   ├── results/
-│   │   └── trajectories/
-│   │
-│   ├── requirements.txt
-│   └── README.md
-│
-└── .gitignore
+└── agentic-bugfixer/
+    │
+    ├── backend/
+    │   ├── agent.py
+    │   ├── patcher.py
+    │   ├── approval/
+    │   ├── audit/
+    │   ├── evaluation/
+    │   ├── execution/
+    │   ├── explainability/
+    │   ├── git/
+    │   ├── quality/
+    │   ├── recovery/
+    │   ├── reporting/
+    │   └── trajectory/
+    │
+    ├── benchmarks/
+    │   ├── bug_01/
+    │   ├── bug_02/
+    │   ├── ...
+    │   └── bug_12/
+    │
+    ├── evaluation/
+    │   ├── approvals/
+    │   ├── audit_logs/
+    │   ├── explanations/
+    │   ├── recovery/
+    │   ├── repair_reports/
+    │   ├── reports/
+    │   ├── results/
+    │   └── trajectories/
+    │
+    ├── requirements.txt
+    └── README.md
 ```
 
 ---
@@ -993,19 +998,21 @@ autonomous-bug-fix-agent/
 
 ## Deterministic Evaluation
 
-The benchmark runner executes the Python tests without making AI API calls.
+The benchmark runner executes repository tests without making AI API calls.
 
-The latest 12-benchmark evaluation completed at approximately:
+The latest evaluation completed:
 
 ```text
-0.84 seconds / benchmark
+12 benchmarks
+11.5429 seconds total
+0.9619 seconds average per benchmark
 ```
 
-This makes repeated deterministic evaluation inexpensive and fast.
+This makes repeated deterministic evaluation fast and inexpensive.
 
 ## AI-Powered Repair
 
-The autonomous repair workflow uses an external Gemini API.
+The autonomous repair workflow uses the Gemini API.
 
 AI usage depends on:
 
@@ -1016,8 +1023,6 @@ AI usage depends on:
 * and retry behavior.
 
 The system therefore keeps AI retries bounded.
-
-For reproducible evaluation, the deterministic benchmark evaluation should be run independently from AI-powered repair executions.
 
 ---
 
@@ -1035,7 +1040,7 @@ The project evolved from a basic AI repair loop into a controlled autonomous deb
 | Test-file protection   |  Limited |        ✓        |
 | Patch safety gate      |     —    |        ✓        |
 | Backup                 |     —    |        ✓        |
-| Rollback / recovery    |     —    |        ✓        |
+| Recovery               |     —    |        ✓        |
 | Failure classification |     —    |        ✓        |
 | Self-correction        |     —    |        ✓        |
 | Bounded retries        |     —    |        ✓        |
@@ -1043,56 +1048,24 @@ The project evolved from a basic AI repair loop into a controlled autonomous deb
 | Trajectory tracking    |     —    |        ✓        |
 | 12-case evaluation     |     —    |        ✓        |
 
-The key improvement was moving from:
+The key architectural improvement is:
 
 ```text
 AI generates code
-```
-
-to:
-
-```text
-AI reasons
-   ↓
+       ↓
 Patch is validated
-   ↓
+       ↓
 Patch is safety checked
-   ↓
+       ↓
 Execution is controlled
-   ↓
+       ↓
 Tests provide feedback
-   ↓
+       ↓
 Failures trigger bounded recovery
-   ↓
+       ↓
 Final result is verified
-   ↓
+       ↓
 Trajectory provides evidence
-```
-
----
-
-# 🏆 Final Result
-
-```text
-AUTONOMOUS BUG FIX AGENT
-
-Benchmarks : 12
-Passed     : 12
-Failed     : 0
-Success    : 100%
-Status     : EXCELLENT
-```
-
-The result is supported by the generated evaluation report:
-
-```text
-evaluation/reports/benchmark_results.json
-```
-
-and agent execution evidence:
-
-```text
-evaluation/trajectories/
 ```
 
 ---
@@ -1105,9 +1078,11 @@ A code-generation model can produce a patch that:
 
 * looks reasonable,
 * passes syntax validation,
-* but still fails the actual behavioral tests.
+* but still fails behavioral tests.
 
-This demonstrated that **code generation cannot be the final verification step**.
+This demonstrated that:
+
+> **Code generation cannot be the final verification step.**
 
 The system therefore closes the loop using actual execution:
 
@@ -1140,27 +1115,27 @@ LLMs are valuable for:
 * understanding natural-language issues,
 * reasoning about root causes,
 * selecting relevant code,
-* and generating repairs.
+* generating repairs.
 
 But reliable autonomy requires deterministic engineering around the model:
 
 ```text
 AI reasoning
-+
+     +
 Safety constraints
-+
+     +
 Validation
-+
+     +
 Real execution
-+
+     +
 Test feedback
-+
+     +
 Recovery
-+
+     +
 Human control
-+
+     +
 Observable trajectories
-=
+     =
 Reliable agentic workflow
 ```
 
@@ -1174,23 +1149,24 @@ The recommended demonstration flow is:
 
 ```text
 1. Show the problem
-2. Show the baseline result
-3. Select a failing benchmark
-4. Run the autonomous agent
-5. Show AI bug analysis
-6. Show generated patch
-7. Show syntax validation
-8. Show patch safety gate
-9. Show human approval
-10. Show patch application
-11. Show test verification
-12. Run the complete 12-case evaluation
-13. Show 100% final result
-14. Show trajectory evidence
-15. Explain the main lesson
+2. Show a failing benchmark
+3. Show the simple baseline
+4. Select a benchmark
+5. Run the autonomous agent
+6. Show AI bug analysis
+7. Show generated patch
+8. Show syntax validation
+9. Show patch safety gate
+10. Show human approval
+11. Show patch application
+12. Show test verification
+13. Run the complete 12-case evaluation
+14. Show 100% final result
+15. Show trajectory evidence
+16. Explain the main lesson
 ```
 
-A complete demonstration can be performed from the terminal and repository without requiring a separate frontend.
+The complete demonstration can be performed from the terminal and repository.
 
 ---
 
@@ -1219,30 +1195,13 @@ Important evidence included in the repository:
 ```text
 evaluation/
 ├── reports/
-│   ├── benchmark_results.json
-│   └── evaluation_dashboard.json
-│
 ├── results/
-│   ├── baseline_results.json
-│   └── evaluation_results.json
-│
 ├── trajectories/
-│   └── representative agent runs
-│
 ├── approvals/
-│   └── human approval evidence
-│
 ├── audit_logs/
-│   └── execution evidence
-│
 ├── explanations/
-│   └── patch explanations
-│
 ├── recovery/
-│   └── recovery evidence
-│
 └── repair_reports/
-    └── repair results
 ```
 
 These artifacts make the workflow observable rather than relying only on a final success message.
@@ -1253,15 +1212,15 @@ These artifacts make the workflow observable rather than relying only on a final
 
 The project follows three principles.
 
-### 1. Reason with AI
+## 1. Reason with AI
 
 Use the model where flexible reasoning is valuable.
 
-### 2. Control with deterministic engineering
+## 2. Control with deterministic engineering
 
 Use deterministic checks where safety and correctness must be predictable.
 
-### 3. Verify with execution
+## 3. Verify with execution
 
 Never assume a patch works because the model says it works.
 
@@ -1279,23 +1238,25 @@ Potential future improvements include:
 * larger-scale evaluation,
 * improved recovery strategies,
 * additional language support,
-* execution sandboxing,
+* stronger execution sandboxing,
 * patch quality scoring,
-* and more detailed trajectory visualization.
+* and trajectory visualization.
 
-These are intentionally separated from the current benchmark implementation so that the current evaluation remains reproducible.
+These improvements are intentionally separated from the current benchmark implementation so the current evaluation remains reproducible.
 
 ---
 
 # 🏁 Conclusion
 
-The **Autonomous Bug Fix Agent** demonstrates an agentic software engineering workflow in which AI performs debugging and repair reasoning while deterministic systems provide validation, safety, execution control, recovery, and evidence.
+The **Autonomous Bug Fix Agent** demonstrates an agentic software engineering workflow in which AI performs debugging and repair reasoning while deterministic systems provide validation, safety, controlled execution, recovery, evaluation, human checkpoints, and observable agent trajectories.
 
-The final benchmark result is:
+The current benchmark result is:
 
 ```text
 12 / 12 benchmarks passed
 100% success rate
+11.5429s total deterministic evaluation
+0.9619s average per benchmark
 ```
 
 More importantly, the project demonstrates the transition from:
@@ -1308,12 +1269,18 @@ to:
 
 ```text
 AI reasoning
-→ deterministic safety
-→ controlled execution
-→ real test feedback
-→ bounded recovery
-→ verified result
-→ observable trajectory
+      ↓
+Deterministic safety
+      ↓
+Controlled execution
+      ↓
+Real test feedback
+      ↓
+Bounded recovery
+      ↓
+Verified result
+      ↓
+Observable trajectory
 ```
 
 That is the core idea behind making autonomous software engineering more reliable.
