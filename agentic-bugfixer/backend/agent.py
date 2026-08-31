@@ -1,11 +1,26 @@
 import os
 import re
 import json
+import time
 import subprocess
 from pathlib import Path
 
 from dotenv import load_dotenv
 from google import genai
+
+from backend.patcher import (
+    validate_target_file,
+    create_backup,
+    apply_fix,
+    restore_backup,
+    remove_backup,
+    get_diff,
+    validate_python_syntax,
+)
+
+from backend.trajectory.integration.agent_integration import (
+    AgentTrajectoryIntegration
+)
 
 
 # ============================================================
@@ -14,18 +29,21 @@ from google import genai
 
 load_dotenv()
 
-api_key = os.getenv("GEMINI_API_KEY")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
-if not api_key:
-    raise ValueError(
-        "GEMINI_API_KEY is not set in the .env file."
-    )
-
-client = genai.Client(api_key=api_key)
+client = None
 
 MODEL = os.getenv(
     "MODEL_NAME",
     "gemini-2.5-flash-lite"
+)
+
+MAX_AI_RETRIES = int(
+    os.getenv("MAX_AI_RETRIES", "3")
+)
+
+AI_RETRY_DELAY = float(
+    os.getenv("AI_RETRY_DELAY", "5")
 )
 
 
@@ -34,88 +52,130 @@ MODEL = os.getenv(
 # ============================================================
 
 BASE_DIR = Path(__file__).resolve().parent.parent
+
 BENCHMARKS_DIR = BASE_DIR / "benchmarks"
 
 
 # ============================================================
-# REPOSITORY READER
+# AI CLIENT
 # ============================================================
 
-def read_repository(repo_path: str) -> str:
-    root = Path(repo_path).resolve()
+def get_ai_client():
+    """
+    Lazily create the Gemini client.
 
-    context = []
+    The API key is required only when an actual
+    AI-powered request is made.
+    """
 
-    for file in root.rglob("*"):
+    global client
 
-        if not file.is_file():
-            continue
+    if client is not None:
+        return client
 
-        if ".git" in file.parts:
-            continue
+    api_key = os.getenv("GEMINI_API_KEY")
 
-        if "__pycache__" in file.parts:
-            continue
+    if not api_key:
+        raise RuntimeError(
+            "GEMINI_API_KEY is not set. "
+            "Add GEMINI_API_KEY to backend/.env before "
+            "running an AI-powered bug-fix."
+        )
 
-        if ".pytest_cache" in file.parts:
-            continue
+    client = genai.Client(
+        api_key=api_key
+    )
 
-        if file.name.endswith(".bak"):
-            continue
+    return client
 
+
+# ============================================================
+# AI REQUEST LAYER
+# ============================================================
+
+def ask_ai(prompt: str) -> str:
+    """
+    Centralized AI request layer.
+
+    All AI communication goes through this function.
+    """
+
+    last_error = None
+
+    for attempt in range(
+        1,
+        MAX_AI_RETRIES + 1
+    ):
         try:
-            content = file.read_text(
-                encoding="utf-8"
+            print(
+                f"\n🤖 AI request "
+                f"({attempt}/{MAX_AI_RETRIES})..."
             )
 
-            relative_path = file.relative_to(root)
-
-            context.append(
-                f"\n--- {relative_path} ---\n"
-                f"{content}"
+            response = get_ai_client().models.generate_content(
+                model=MODEL,
+                contents=prompt
             )
 
-        except Exception:
-            pass
+            if not response:
+                raise RuntimeError(
+                    "AI returned no response."
+                )
 
-    return "\n".join(context)
+            if not response.text:
+                raise RuntimeError(
+                    "AI returned an empty response."
+                )
+
+            return response.text.strip()
+
+        except Exception as error:
+            last_error = error
+
+            print(
+                f"\n⚠ AI request failed: {error}"
+            )
+
+            if attempt < MAX_AI_RETRIES:
+                wait_time = (
+                    AI_RETRY_DELAY * attempt
+                )
+
+                print(
+                    f"⏳ Retrying in "
+                    f"{wait_time:.1f} seconds..."
+                )
+
+                time.sleep(wait_time)
+
+    raise RuntimeError(
+        f"AI request failed after "
+        f"{MAX_AI_RETRIES} attempts: "
+        f"{last_error}"
+    )
 
 
 # ============================================================
-# CLEAN GEMINI RESPONSE
+# CLEAN AI RESPONSE
 # ============================================================
 
 def clean_response(content: str) -> str:
+    """
+    Remove markdown code fences and surrounding whitespace.
+    """
 
     if not content:
         return ""
 
     content = content.strip()
 
-    # Remove python code fence
     content = re.sub(
-        r"^```python\s*",
+        r"^```(?:python|json|text)?\s*",
         "",
         content,
         flags=re.IGNORECASE
     )
 
-    # Remove json code fence
-    content = re.sub(
-        r"^```json\s*",
-        "",
-        content,
-        flags=re.IGNORECASE
-    )
-
-    # Remove generic code fence
-    content = re.sub(
-        r"^```\s*",
-        "",
-        content
-    )
-
-    # Remove closing fence
     content = re.sub(
         r"\s*```$",
         "",
@@ -126,81 +186,94 @@ def clean_response(content: str) -> str:
 
 
 # ============================================================
-# FALLBACK BUG ANALYSIS
+# READ REPOSITORY
 # ============================================================
 
-def fallback_analysis(issue: str, repository: str) -> dict:
+def read_repository(repo_path: str) -> str:
     """
-    Deterministic fallback used when Gemini API is unavailable.
+    Read supported source files from a repository.
 
-    Handles known benchmark bugs without modifying tests.
+    Tests are included so the AI can understand expected
+    behavior, but the agent will never intentionally modify
+    test files.
     """
 
-    issue_lower = issue.lower()
+    root = Path(repo_path).resolve()
 
-    # BUG 01
-    if "divide" in issue_lower:
+    if not root.is_dir():
+        raise FileNotFoundError(
+            f"Repository not found: {repo_path}"
+        )
 
-        return {
-            "root_cause": (
-                "The divide function uses multiplication "
-                "instead of division."
-            ),
-            "file": "calculator.py",
-            "correction": (
-                "Replace the multiplication operator "
-                "with division."
+    ignored_directories = {
+        ".git",
+        "__pycache__",
+        ".pytest_cache",
+        "node_modules",
+        ".venv",
+        "venv",
+        "dist",
+        "build",
+    }
+
+    supported_extensions = {
+        ".py",
+        ".js",
+        ".jsx",
+        ".ts",
+        ".tsx",
+        ".java",
+        ".cpp",
+        ".c",
+        ".h",
+        ".cs",
+        ".go",
+        ".rs",
+        ".rb",
+        ".php",
+        ".sql",
+        ".json",
+        ".yaml",
+        ".yml",
+        ".toml",
+        ".md",
+        ".txt",
+    }
+
+    files = []
+
+    for path in root.rglob("*"):
+
+        if not path.is_file():
+            continue
+
+        if any(
+            part in ignored_directories
+            for part in path.parts
+        ):
+            continue
+
+        if path.suffix.lower() not in supported_extensions:
+            continue
+
+        try:
+            content = path.read_text(
+                encoding="utf-8"
             )
-        }
+        except (
+            UnicodeDecodeError,
+            OSError
+        ):
+            continue
 
-    # BUG 02
-    if "discount" in issue_lower:
+        relative_path = path.relative_to(root)
 
-        return {
-            "root_cause": (
-                "The discount calculation uses an "
-                "incorrect percentage operation."
-            ),
-            "file": "discount.py",
-            "correction": (
-                "Calculate discount_amount as "
-                "price * discount_percent / 100."
-            )
-        }
+        files.append(
+            f"\n===== FILE: {relative_path} =====\n"
+            f"{content}"
+        )
 
-    # BUG 03
-    if "average" in issue_lower:
-
-        return {
-            "root_cause": (
-                "The average calculation performs "
-                "integer division."
-            ),
-            "file": "statistics.py",
-            "correction": (
-                "Use floating-point division when "
-                "calculating the average."
-            )
-        }
-
-    # BUG 04
-    if "even" in issue_lower or "parity" in issue_lower:
-
-        return {
-            "root_cause": (
-                "The parity condition is reversed."
-            ),
-            "file": "parity_checker.py",
-            "correction": (
-                "Return True when number modulo 2 "
-                "equals zero."
-            )
-        }
-
-    raise ValueError(
-        "Gemini unavailable and no deterministic "
-        "fallback matches this issue."
-    )
+    return "\n".join(files)
 
 
 # ============================================================
@@ -209,107 +282,147 @@ def fallback_analysis(issue: str, repository: str) -> dict:
 
 def analyze_bug(
     issue: str,
-    repository: str
+    repository: str,
+    repository_contents: str
 ) -> dict:
+    """
+    Analyze the reported bug and identify the exact
+    source file that should be modified.
+    """
 
     prompt = f"""
-You are a senior autonomous software debugging agent.
+You are an autonomous senior software debugging agent.
 
-Analyze the software issue and repository.
+Investigate the repository and determine the actual root
+cause of the reported issue.
 
-ISSUE:
+Do NOT rely on benchmark names.
+Do NOT assume a known bug pattern.
+
+============================================================
+ISSUE
+============================================================
 
 {issue}
 
-REPOSITORY:
+============================================================
+REPOSITORY PATH
+============================================================
 
 {repository}
 
-Determine:
+============================================================
+REPOSITORY CONTENTS
+============================================================
 
-1. The root cause.
-2. The exact source file that needs modification.
-3. What correction is required.
+{repository_contents}
 
-IMPORTANT:
+============================================================
+TASK
+============================================================
+
+1. Understand the reported issue.
+2. Inspect the relevant source files.
+3. Inspect tests when useful.
+4. Determine expected behavior.
+5. Determine actual behavior.
+6. Identify the exact root cause.
+7. Identify the exact source file that must be modified.
+8. Describe the smallest correct correction.
+
+============================================================
+STRICT RULES
+============================================================
 
 - Do not modify tests.
-- Do not invent files.
-- Choose a file that actually exists.
 - Do not select a test file.
-- Keep the fix minimal.
+- Do not invent files.
+- Select only a file that exists.
+- Do not hardcode benchmark-specific solutions.
+- Do not assume a particular filename.
+- Do not assume a particular bug pattern.
+- Generalize to valid inputs.
+- Preserve existing APIs.
+- Keep the correction minimal.
 
 Return ONLY valid JSON.
 
 Required format:
 
 {{
-    "root_cause": "short explanation",
-    "file": "relative/path/to/source_file.py",
-    "correction": "short explanation"
+    "root_cause": "actual defect",
+    "file": "relative/path/to/source/file",
+    "correction": "precise correction"
 }}
 """
 
-    try:
+    text = ask_ai(prompt)
 
-        response = client.models.generate_content(
-            model=MODEL,
-            contents=prompt
+    text = clean_response(text)
+
+    try:
+        result = json.loads(text)
+
+    except json.JSONDecodeError:
+
+        match = re.search(
+            r"\{.*\}",
+            text,
+            re.DOTALL
         )
 
-        text = clean_response(response.text)
-
-        try:
-            result = json.loads(text)
-
-        except json.JSONDecodeError:
-
-            # Correct JSON extraction regex
-            # Correct JSON extraction regex
-            match = re.search(
-               r"\{.*\}",
-              text,
-        re.DOTALL
-    )
-            if not match:
-                raise ValueError(
-                    "Gemini did not return valid JSON."
-                )
-
-            result = json.loads(
-                match.group(0)
+        if not match:
+            raise ValueError(
+                "AI did not return valid JSON."
             )
 
-        required_fields = [
-            "root_cause",
-            "file",
-            "correction"
-        ]
-
-        for field in required_fields:
-
-            if field not in result:
-
-                raise ValueError(
-                    f"Gemini response missing field: {field}"
-                )
-
-        return result
-
-    except Exception as error:
-
-        print(
-            f"\n⚠ Gemini unavailable: {error}"
+        result = json.loads(
+            match.group(0)
         )
 
-        print(
-            "\n🤖 Using deterministic fallback analyzer..."
+    required_fields = [
+        "root_cause",
+        "file",
+        "correction"
+    ]
+
+    for field in required_fields:
+
+        if field not in result:
+            raise ValueError(
+                f"AI response missing field: {field}"
+            )
+
+    repository_path = Path(
+        repository
+    ).resolve()
+
+    target_path = (
+        repository_path /
+        result["file"]
+    ).resolve()
+
+    # Prevent path traversal.
+    if (
+        target_path != repository_path
+        and repository_path not in target_path.parents
+    ):
+        raise ValueError(
+            "AI selected a file outside repository."
         )
 
-        return fallback_analysis(
-            issue,
-            repository
+    if not target_path.is_file():
+        raise ValueError(
+            "AI selected a file that does not exist: "
+            f"{result['file']}"
         )
+
+    validate_target_file(
+        str(repository_path),
+        result["file"]
+    )
+
+    return result
 
 
 # ============================================================
@@ -320,6 +433,9 @@ def read_file(
     repo_path: str,
     file_name: str
 ) -> str:
+    """
+    Read a specific repository file.
+    """
 
     root = Path(repo_path).resolve()
 
@@ -327,85 +443,23 @@ def read_file(
         root / file_name
     ).resolve()
 
-    if root not in file_path.parents:
-
+    if (
+        file_path != root
+        and root not in file_path.parents
+    ):
         raise ValueError(
             "Invalid file path."
         )
 
     if not file_path.is_file():
-
         raise FileNotFoundError(
-            f"Target file does not exist: {file_name}"
+            f"Target file does not exist: "
+            f"{file_name}"
         )
 
     return file_path.read_text(
         encoding="utf-8"
     )
-
-
-# ============================================================
-# VALIDATE TARGET FILE
-# ============================================================
-
-def validate_target_file(
-    file_name: str
-):
-
-    path = Path(file_name)
-
-    file_lower = path.name.lower()
-
-    if file_lower.startswith("test_"):
-
-        raise ValueError(
-            "Agent is not allowed to modify test files."
-        )
-
-    if file_lower.endswith("_test.py"):
-
-        raise ValueError(
-            "Agent is not allowed to modify test files."
-        )
-
-
-# ============================================================
-# DETERMINISTIC FALLBACK FIX
-# ============================================================
-
-def fallback_fix(
-    target_file: str
-) -> str:
-
-    fixes = {
-
-        "calculator.py": """def divide(a, b):
-    return a / b
-""",
-
-        "discount.py": """def calculate_discount(price, discount_percent):
-    discount_amount = price * (discount_percent / 100)
-    return price - discount_amount
-""",
-
-        "statistics.py": """def calculate_average(numbers):
-    return sum(numbers) / len(numbers)
-""",
-
-        "parity_checker.py": """def is_even(number):
-    return number % 2 == 0
-"""
-    }
-
-    filename = Path(target_file).name
-
-    if filename not in fixes:
-
-        raise ValueError(
-            f"No fallback fix available for {filename}"
-        )
-
-    return fixes[filename]
 
 
 # ============================================================
@@ -418,186 +472,87 @@ def generate_fix(
     analysis: dict,
     target_file: str
 ) -> str:
+    """
+    Generate the initial source-code fix.
+    """
+
+    current_code = read_file(
+        repository,
+        target_file
+    )
 
     prompt = f"""
-You are an expert software engineer.
+You are an autonomous senior software engineer.
 
-Fix the reported bug.
+Fix the actual defect in the repository.
 
-ISSUE:
+You have already received an analysis from another
+debugging stage.
+
+Do NOT use benchmark-specific knowledge.
+
+============================================================
+ISSUE
+============================================================
 
 {issue}
 
-ROOT CAUSE:
+============================================================
+ROOT CAUSE
+============================================================
 
 {analysis["root_cause"]}
 
-CORRECTION:
+============================================================
+REQUIRED CORRECTION
+============================================================
 
 {analysis["correction"]}
 
-TARGET FILE:
+============================================================
+TARGET FILE
+============================================================
 
 {target_file}
 
-REPOSITORY:
+============================================================
+CURRENT SOURCE CODE
+============================================================
 
-{repository}
+{current_code}
 
-Return ONLY the complete corrected contents
-of this source file:
+============================================================
+RULES
+============================================================
 
-{target_file}
+1. Fix the actual defect.
+2. Preserve existing functionality.
+3. Make the smallest correct change.
+4. Do not modify tests.
+5. Do not create new files.
+6. Do not invent APIs.
+7. Do not hardcode expected test outputs.
+8. Do not solve only one test case.
+9. Generalize to valid inputs.
+10. Preserve the public interface.
+11. Return COMPLETE corrected contents.
+12. Return ONLY source code.
+13. Do not use markdown fences.
+14. Do not include explanations.
 
-Rules:
-
-- Do not modify tests.
-- Do not delete tests.
-- Do not add new files.
-- Do not add explanations.
-- Do not use markdown code fences.
-- Preserve existing functionality.
-- Make the smallest possible change.
+Generate the corrected source code now.
 """
 
-    try:
+    text = ask_ai(prompt)
 
-        response = client.models.generate_content(
-            model=MODEL,
-            contents=prompt
-        )
+    text = clean_response(text)
 
-        return clean_response(
-            response.text
-        )
-
-    except Exception as error:
-
-        print(
-            f"\n⚠ Gemini fix generation unavailable: {error}"
-        )
-
-        print(
-            "\n🤖 Using deterministic fallback fix..."
-        )
-
-        return fallback_fix(
-            target_file
-        )
-
-
-# ============================================================
-# UPDATE FILE
-# ============================================================
-
-def update_file(
-    repo_path: str,
-    file_name: str,
-    new_content: str
-):
-
-    validate_target_file(
-        file_name
-    )
-
-    root = Path(repo_path).resolve()
-
-    file_path = (
-        root / file_name
-    ).resolve()
-
-    if root not in file_path.parents:
-
+    if not text:
         raise ValueError(
-            "Invalid file path."
+            "AI generated an empty fix."
         )
 
-    if not file_path.is_file():
-
-        raise FileNotFoundError(
-            f"Target file does not exist: {file_name}"
-        )
-
-    file_path.write_text(
-        new_content.rstrip() + "\n",
-        encoding="utf-8"
-    )
-
-
-# ============================================================
-# CREATE BACKUP
-# ============================================================
-
-def create_backup(
-    repo_path: str,
-    target_file: str
-) -> str:
-
-    root = Path(repo_path).resolve()
-
-    file_path = (
-        root / target_file
-    ).resolve()
-
-    if root not in file_path.parents:
-
-        raise ValueError(
-            "Invalid file path."
-        )
-
-    if not file_path.is_file():
-
-        raise FileNotFoundError(
-            f"Target file does not exist: {target_file}"
-        )
-
-    backup_path = file_path.with_suffix(
-        file_path.suffix + ".bak"
-    )
-
-    backup_path.write_text(
-        file_path.read_text(
-            encoding="utf-8"
-        ),
-        encoding="utf-8"
-    )
-
-    return str(backup_path)
-
-
-# ============================================================
-# RESTORE BACKUP
-# ============================================================
-
-def restore_backup(
-    repo_path: str,
-    target_file: str
-):
-
-    root = Path(repo_path).resolve()
-
-    file_path = (
-        root / target_file
-    ).resolve()
-
-    backup_path = file_path.with_suffix(
-        file_path.suffix + ".bak"
-    )
-
-    if not backup_path.is_file():
-
-        raise FileNotFoundError(
-            f"Backup not found: {backup_path}"
-        )
-
-    file_path.write_text(
-        backup_path.read_text(
-            encoding="utf-8"
-        ),
-        encoding="utf-8"
-    )
-
-    backup_path.unlink()
+    return text
 
 
 # ============================================================
@@ -607,6 +562,9 @@ def restore_backup(
 def run_tests(
     repo_path: str
 ) -> dict:
+    """
+    Run pytest for the repository.
+    """
 
     print(
         "\n========== RUNNING TESTS ==========\n"
@@ -635,58 +593,168 @@ def run_tests(
 
         return {
             "passed": result.returncode == 0,
-            "output": output
+            "output": output,
         }
 
     except subprocess.TimeoutExpired:
 
         return {
             "passed": False,
-            "output": "Tests timed out."
+            "output": "Tests timed out.",
         }
 
     except Exception as error:
 
         return {
             "passed": False,
-            "output": str(error)
+            "output": str(error),
         }
 
 
 # ============================================================
-# GIT DIFF
+# FAILURE CLASSIFICATION
 # ============================================================
-def get_git_diff(repo_path: str) -> str:
+
+def classify_failure(
+    test_output: str
+) -> dict:
     """
-    Generate git diff safely across Windows/Linux/macOS.
+    Analyze pytest output and classify the failure.
+
+    This is deterministic and does not require AI.
     """
 
-    try:
-        result = subprocess.run(
-            [
-                "git",
-                "diff"
-            ],
-            cwd=repo_path,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=30
-        )
+    if not test_output:
+        return {
+            "type": "unknown",
+            "severity": "high",
+            "reason": "No test output was produced."
+        }
 
-        if result.returncode != 0:
-            return (
-                f"Unable to generate git diff: "
-                f"{result.stderr.strip()}"
+    output = test_output.lower()
+
+    # --------------------------------------------------------
+    # TIMEOUT
+    # --------------------------------------------------------
+
+    if (
+        "timed out" in output
+        or "timeout" in output
+    ):
+        return {
+            "type": "timeout",
+            "severity": "critical",
+            "reason": (
+                "The test execution exceeded "
+                "the allowed time."
             )
+        }
 
-        return (result.stdout or "").strip()
+    # --------------------------------------------------------
+    # SYNTAX ERROR
+    # --------------------------------------------------------
 
-    except Exception as error:
-        return (
-            f"Unable to generate git diff: {error}"
+    if (
+        "syntaxerror" in output
+        or "invalid syntax" in output
+    ):
+        return {
+            "type": "syntax_error",
+            "severity": "critical",
+            "reason": (
+                "The generated source code "
+                "contains invalid Python syntax."
+            )
+        }
+
+    # --------------------------------------------------------
+    # IMPORT ERROR
+    # --------------------------------------------------------
+
+    if (
+        "modulenotfounderror" in output
+        or "importerror" in output
+    ):
+        return {
+            "type": "import_error",
+            "severity": "high",
+            "reason": (
+                "The patched code contains an "
+                "import or module dependency problem."
+            )
+        }
+
+    # --------------------------------------------------------
+    # NAME ERROR
+    # --------------------------------------------------------
+
+    if "nameerror" in output:
+        return {
+            "type": "name_error",
+            "severity": "high",
+            "reason": (
+                "The patch references an undefined "
+                "variable, function, or name."
+            )
+        }
+
+    # --------------------------------------------------------
+    # TYPE ERROR
+    # --------------------------------------------------------
+
+    if "typeerror" in output:
+        return {
+            "type": "type_error",
+            "severity": "high",
+            "reason": (
+                "The patch caused an incompatible "
+                "type operation."
+            )
+        }
+
+    # --------------------------------------------------------
+    # ATTRIBUTE ERROR
+    # --------------------------------------------------------
+
+    if "attributeerror" in output:
+        return {
+            "type": "attribute_error",
+            "severity": "high",
+            "reason": (
+                "The patch accessed an invalid "
+                "or missing attribute."
+            )
+        }
+
+    # --------------------------------------------------------
+    # ASSERTION / TEST FAILURE
+    # --------------------------------------------------------
+
+    if (
+        "assert " in output
+        or "failed" in output
+        or "assertionerror" in output
+    ):
+        return {
+            "type": "test_failure",
+            "severity": "medium",
+            "reason": (
+                "The patched implementation does "
+                "not satisfy the expected behavior."
+            )
+        }
+
+    # --------------------------------------------------------
+    # UNKNOWN
+    # --------------------------------------------------------
+
+    return {
+        "type": "unknown",
+        "severity": "high",
+        "reason": (
+            "The failure could not be classified automatically."
         )
+    }
 
 
 # ============================================================
@@ -701,80 +769,95 @@ def repair_fix(
     current_code: str,
     test_output: str
 ) -> str:
+    """
+    Generate a better fix after a failed test attempt.
+    """
 
     prompt = f"""
 You are an autonomous software debugging agent.
 
-The previous fix failed the tests.
+The previous AI-generated fix FAILED the tests.
 
-ORIGINAL ISSUE:
+Inspect the failure and produce a better fix.
+
+Do NOT use hardcoded benchmark-specific logic.
+
+============================================================
+ORIGINAL ISSUE
+============================================================
 
 {issue}
 
-ROOT CAUSE:
+============================================================
+ROOT CAUSE
+============================================================
 
 {analysis["root_cause"]}
 
-CORRECTION:
+============================================================
+PREVIOUS CORRECTION
+============================================================
 
 {analysis["correction"]}
 
-TARGET FILE:
+============================================================
+TARGET FILE
+============================================================
 
 {target_file}
 
-CURRENT CODE:
+============================================================
+CURRENT CODE
+============================================================
 
 {current_code}
 
-TEST FAILURE:
+============================================================
+TEST FAILURE
+============================================================
 
 {test_output}
 
-Your job is to correct the implementation.
-
-Instructions:
+============================================================
+TASK
+============================================================
 
 1. Read the test failure carefully.
-2. Determine why the previous solution failed.
-3. Correct the implementation.
-4. Do not modify tests.
-5. Do not invent files.
-6. Preserve existing functionality.
-7. Make the smallest necessary change.
-8. Return ONLY the complete corrected contents of:
-   {target_file}
-9. Do not use markdown code fences.
-10. Do not add explanations.
+2. Determine why the previous fix failed.
+3. Re-evaluate the implementation.
+4. Correct the actual defect.
+5. Preserve existing functionality.
+6. Make the smallest necessary change.
+7. Generalize to valid inputs.
+
+============================================================
+STRICT RULES
+============================================================
+
+- Do not modify tests.
+- Do not create new files.
+- Do not invent APIs.
+- Do not hardcode test outputs.
+- Do not create a one-test-case solution.
+- Return COMPLETE corrected contents of:
+  {target_file}
+
+Return ONLY source code.
+
+Do not use markdown code fences.
+Do not include explanations.
 """
 
-    # IMPORTANT:
-    # try/except MUST be inside repair_fix()
+    text = ask_ai(prompt)
 
-    try:
+    text = clean_response(text)
 
-        response = client.models.generate_content(
-            model=MODEL,
-            contents=prompt
+    if not text:
+        raise ValueError(
+            "AI generated an empty repair."
         )
 
-        return clean_response(
-            response.text
-        )
-
-    except Exception as error:
-
-        print(
-            f"\n⚠ Gemini repair unavailable: {error}"
-        )
-
-        print(
-            "\n🤖 Using deterministic fallback repair..."
-        )
-
-        return fallback_fix(
-            target_file
-        )
+    return text
 
 
 # ============================================================
@@ -784,7 +867,6 @@ Instructions:
 def get_benchmarks():
 
     if not BENCHMARKS_DIR.exists():
-
         raise FileNotFoundError(
             f"Benchmarks directory not found: "
             f"{BENCHMARKS_DIR}"
@@ -800,15 +882,18 @@ def get_benchmarks():
         if not directory.name.startswith("bug_"):
             continue
 
-        issue_file = directory / "issue.txt"
+        issue_file = (
+            directory / "issue.txt"
+        )
 
-        repo_directory = directory / "repo"
+        repo_directory = (
+            directory / "repo"
+        )
 
         if (
             issue_file.is_file()
             and repo_directory.is_dir()
         ):
-
             benchmarks.append(
                 directory
             )
@@ -829,7 +914,6 @@ def select_benchmark():
     benchmarks = get_benchmarks()
 
     if not benchmarks:
-
         raise RuntimeError(
             "No valid benchmarks found."
         )
@@ -842,7 +926,6 @@ def select_benchmark():
         benchmarks,
         start=1
     ):
-
         print(
             f"{index}. {benchmark.name}"
         )
@@ -860,7 +943,6 @@ def select_benchmark():
             number = int(choice)
 
             if 1 <= number <= len(benchmarks):
-
                 return benchmarks[
                     number - 1
                 ]
@@ -874,300 +956,294 @@ def select_benchmark():
 
 
 # ============================================================
-# MAIN AGENT
+# VERIFY INITIAL BUG
 # ============================================================
-def run_all_benchmarks():
+
+def verify_initial_bug(
+    repo_path: str
+) -> dict:
     """
-    Run the autonomous bug-fixing agent on every benchmark.
+    Run repository tests before modifying anything.
+
+    This establishes the initial state of the benchmark.
     """
 
-    benchmarks = get_benchmarks()
-
-    if not benchmarks:
-        print("\n❌ No benchmarks found.")
-        return
-
-    print("\n" + "=" * 60)
-    print("🚀 RUNNING ALL BENCHMARKS AUTONOMOUSLY")
-    print("=" * 60)
-
-    results = []
-
-    for benchmark in benchmarks:
-
-        print("\n" + "=" * 60)
-        print(f"🔧 PROCESSING {benchmark.name}")
-        print("=" * 60)
-
-        repo_path = benchmark / "repo"
-        issue_path = benchmark / "issue.txt"
-
-        try:
-            # Read issue
-            issue = issue_path.read_text(
-                encoding="utf-8"
-            )
-
-            # Read repository
-            print("\n📂 Reading repository...")
-            repository = read_repository(
-                str(repo_path)
-            )
-
-            # Analyze bug
-            print("\n🧠 Analyzing bug...")
-            analysis = analyze_bug(
-                issue,
-                repository
-            )
-
-            target_file = analysis["file"]
-
-            print(
-                f"Root cause: {analysis['root_cause']}"
-            )
-            print(
-                f"Target file: {target_file}"
-            )
-            print(
-                f"Correction: {analysis['correction']}"
-            )
-
-            validate_target_file(
-                target_file
-            )
-
-            # Read original code
-            current_code = read_file(
-                str(repo_path),
-                target_file
-            )
-
-            # Create backup
-            print("\n💾 Creating backup...")
-            backup_path = create_backup(
-                str(repo_path),
-                target_file
-            )
-
-            print(
-                f"✓ Backup created: {backup_path}"
-            )
-
-            max_attempts = 3
-            test_result = None
-            verified = False
-
-            for attempt in range(
-                1,
-                max_attempts + 1
-            ):
-
-                print(
-                    f"\n🔄 Attempt "
-                    f"{attempt}/{max_attempts}"
-                )
-
-                # Generate fix
-                if attempt == 1:
-                    fixed_code = generate_fix(
-                        issue,
-                        repository,
-                        analysis,
-                        target_file
-                    )
-                else:
-                    fixed_code = repair_fix(
-                        issue,
-                        repository,
-                        analysis,
-                        target_file,
-                        current_code,
-                        test_result["output"]
-                    )
-
-                fixed_code = clean_response(
-                    fixed_code
-                )
-
-                if not fixed_code:
-                    test_result = {
-                        "passed": False,
-                        "output": "Agent returned empty code."
-                    }
-                    continue
-
-                # Apply fix
-                update_file(
-                    str(repo_path),
-                    target_file,
-                    fixed_code
-                )
-
-                current_code = fixed_code
-
-                # Run tests
-                test_result = run_tests(
-                    str(repo_path)
-                )
-
-                if test_result["passed"]:
-
-                    verified = True
-
-                    print(
-                        f"\n🎉 {benchmark.name} VERIFIED"
-                    )
-
-                    # Remove backup
-                    backup_file = Path(
-                        backup_path
-                    )
-
-                    if backup_file.exists():
-                        backup_file.unlink()
-
-                    break
-
-                print(
-                    f"\n❌ Attempt {attempt} failed."
-                )
-
-            # Rollback if unsuccessful
-            if not verified:
-
-                print(
-                    f"\n↩️ Rolling back {benchmark.name}..."
-                )
-
-                restore_backup(
-                    str(repo_path),
-                    target_file
-                )
-
-                print(
-                    f"✓ {benchmark.name} restored"
-                )
-
-            results.append({
-                "benchmark": benchmark.name,
-                "passed": verified,
-                "target_file": target_file
-            })
-
-        except Exception as error:
-
-            print(
-                f"\n❌ {benchmark.name} ERROR:"
-            )
-            print(error)
-
-            results.append({
-                "benchmark": benchmark.name,
-                "passed": False,
-                "error": str(error)
-            })
-
-    # --------------------------------------------------------
-    # FINAL SUMMARY
-    # --------------------------------------------------------
-
-    passed = sum(
-        result["passed"]
-        for result in results
+    print(
+        "\n========== VERIFYING INITIAL BUG ==========\n"
     )
 
-    total = len(results)
+    result = run_tests(repo_path)
 
-    print("\n")
-    print("=" * 60)
-    print("🤖 AUTONOMOUS BUG FIX SUMMARY")
-    print("=" * 60)
+    if result["passed"]:
 
-    for result in results:
-
-        status = (
-            "PASS"
-            if result["passed"]
-            else "FAIL"
+        print(
+            "⚠ WARNING: Initial repository tests passed."
         )
 
         print(
-            f"{result['benchmark']:<12} {status}"
+            "The benchmark may not contain an active failing bug."
         )
 
-    print("-" * 60)
+    else:
 
-    print(
-        f"Total       : {total}"
-    )
+        print(
+            "✓ Initial tests failed as expected."
+        )
 
-    print(
-        f"Passed      : {passed}"
-    )
+    return result
 
-    print(
-        f"Failed      : {total - passed}"
-    )
 
-    success_rate = (
-        (passed / total) * 100
-        if total
-        else 0
-    )
+# ============================================================
+# PATCH SAFETY GATE
+# ============================================================
 
-    print(
-        f"Success Rate: {success_rate:.1f}%"
-    )
+def validate_patch_safety(
+    repo_path: str,
+    target_file: str,
+    original_code: str,
+    proposed_code: str
+) -> dict:
+    """
+    Validate an AI-generated patch BEFORE it is applied.
 
-    print("=" * 60)
-def main():
+    The safety gate prevents:
 
-    print(
-        "\n========================================"
-    )
+    - test modification
+    - changes outside the target file
+    - excessively large rewrites
+    - empty patches
+    - suspicious source destruction
+    """
 
-    print(
-        "🤖 AUTONOMOUS BUG FIX AGENT"
-    )
+    root = Path(repo_path).resolve()
 
-    print(
-        "========================================"
-    )
+    target_path = (
+        root / target_file
+    ).resolve()
 
     # --------------------------------------------------------
-    # SELECT BUG
+    # TARGET PATH VALIDATION
     # --------------------------------------------------------
 
-    benchmark = select_benchmark()
+    if (
+        target_path != root
+        and root not in target_path.parents
+    ):
+        return {
+            "safe": False,
+            "reason": (
+                "Target file is outside repository."
+            )
+        }
+
+    if not target_path.is_file():
+        return {
+            "safe": False,
+            "reason": (
+                "Target file does not exist."
+            )
+        }
+
+    # --------------------------------------------------------
+    # TEST FILE PROTECTION
+    # --------------------------------------------------------
+
+    target_name = target_path.name.lower()
+
+    if (
+        target_name.startswith("test_")
+        or target_name.endswith("_test.py")
+        or "test" in target_name
+    ):
+        return {
+            "safe": False,
+            "reason": (
+                "Agent is not allowed to modify test files."
+            )
+        }
+
+    # --------------------------------------------------------
+    # EMPTY PATCH CHECK
+    # --------------------------------------------------------
+
+    if original_code == proposed_code:
+
+        return {
+            "safe": False,
+            "reason": (
+                "Generated patch contains no changes."
+            )
+        }
+
+    # --------------------------------------------------------
+    # BASIC SIZE CHECK
+    # --------------------------------------------------------
+
+    original_lines = (
+        original_code.splitlines()
+    )
+
+    proposed_lines = (
+        proposed_code.splitlines()
+    )
+
+    original_count = len(
+        original_lines
+    )
+
+    proposed_count = len(
+        proposed_lines
+    )
+
+    changed_lines = 0
+
+    max_lines = max(
+        original_count,
+        proposed_count
+    )
+
+    for index in range(max_lines):
+
+        old_line = (
+            original_lines[index]
+            if index < original_count
+            else None
+        )
+
+        new_line = (
+            proposed_lines[index]
+            if index < proposed_count
+            else None
+        )
+
+        if old_line != new_line:
+            changed_lines += 1
+
+    # --------------------------------------------------------
+    # PREVENT MASSIVE REWRITES
+    # --------------------------------------------------------
+
+    if (
+        original_count > 0
+        and changed_lines > max(
+            20,
+            int(original_count * 0.70)
+        )
+    ):
+
+        return {
+            "safe": False,
+            "reason": (
+                "Generated patch is excessively large "
+                "relative to the original file."
+            ),
+            "original_lines": original_count,
+            "proposed_lines": proposed_count,
+            "changed_lines": changed_lines
+        }
+
+    # --------------------------------------------------------
+    # BASIC DESTRUCTIVE CHANGE CHECK
+    # --------------------------------------------------------
+
+    removed_lines = max(
+        0,
+        original_count - proposed_count
+    )
+
+    if (
+        original_count >= 10
+        and removed_lines > original_count * 0.5
+    ):
+
+        return {
+            "safe": False,
+            "reason": (
+                "Generated patch removes too much "
+                "existing source code."
+            ),
+            "original_lines": original_count,
+            "proposed_lines": proposed_count,
+            "changed_lines": changed_lines
+        }
+
+    # --------------------------------------------------------
+    # RETURN SAFETY RESULT
+    # --------------------------------------------------------
+
+    return {
+        "safe": True,
+        "reason": (
+            "Patch passed safety validation."
+        ),
+        "original_lines": original_count,
+        "proposed_lines": proposed_count,
+        "changed_lines": changed_lines
+    }
+
+
+# ============================================================
+# RUN AGENT
+# ============================================================
+
+def run_agent(
+    benchmark: Path
+):
+    """
+    Execute the complete autonomous bug-fixing workflow.
+
+    Workflow:
+
+        1. Read issue
+        2. Verify initial bug
+        3. Read repository
+        4. Analyze bug
+        5. Select target
+        6. Create backup
+        7. Generate fix
+        8. Validate generated fix
+        9. Safety gate
+        10. Apply fix
+        11. Read patched file
+        12. Validate patched file
+        13. Generate diff
+        14. Run tests
+        15. Classify failure
+        16. Self-correct
+        17. Roll back if necessary
+    """
 
     repo_path = benchmark / "repo"
 
     issue_path = benchmark / "issue.txt"
 
-    print(
-        f"\nSelected benchmark: {benchmark.name}"
+    # ========================================================
+    # TRAJECTORY TRACKING
+    # ========================================================
+
+    trajectory = AgentTrajectoryIntegration(
+        benchmark.name
     )
 
-    print(
-        f"Repository: {repo_path}"
-    )
-
-    print(
-        f"Issue: {issue_path}"
-    )
-
-    # --------------------------------------------------------
+    # ========================================================
     # READ ISSUE
-    # --------------------------------------------------------
+    # ========================================================
 
     issue = issue_path.read_text(
         encoding="utf-8"
     )
 
-    # --------------------------------------------------------
+    # ========================================================
+    # VERIFY INITIAL BUG
+    # ========================================================
+
+    initial_test_result = verify_initial_bug(
+        str(repo_path)
+    )
+
+    # ========================================================
     # READ REPOSITORY
-    # --------------------------------------------------------
+    # ========================================================
 
     print(
         "\n========== READING REPOSITORY ==========\n"
@@ -1177,9 +1253,13 @@ def main():
         str(repo_path)
     )
 
-    # --------------------------------------------------------
+    trajectory.repository_read(
+        "Repository loaded successfully."
+    )
+
+    # ========================================================
     # ANALYZE BUG
-    # --------------------------------------------------------
+    # ========================================================
 
     print(
         "\n========== ANALYZING BUG ==========\n"
@@ -1187,11 +1267,12 @@ def main():
 
     analysis = analyze_bug(
         issue,
+        str(repo_path),
         repository
     )
 
     print(
-        "Root cause:",
+        "\nRoot cause:",
         analysis["root_cause"]
     )
 
@@ -1205,24 +1286,47 @@ def main():
         analysis["correction"]
     )
 
-    # --------------------------------------------------------
-    # TARGET FILE
-    # --------------------------------------------------------
-
     target_file = analysis["file"]
 
-    validate_target_file(
+    trajectory.bug_analysis(
+        f"{target_file} selected as target file.",
+        analysis.get("root_cause", "")
+    )
+
+    trajectory.target_selected(
         target_file
     )
 
-    current_code = read_file(
+    # ========================================================
+    # VALIDATE TARGET
+    # ========================================================
+
+    validate_target_file(
         str(repo_path),
         target_file
     )
 
-    # --------------------------------------------------------
+    # ========================================================
+    # CAPTURE ORIGINAL CODE
+    # ========================================================
+    #
+    # IMPORTANT:
+    # This must happen BEFORE the first patch is applied.
+    #
+    # The safety gate compares this original code with the
+    # AI-generated code.
+    # ========================================================
+
+    original_code = read_file(
+        str(repo_path),
+        target_file
+    )
+
+    current_code = original_code
+
+    # ========================================================
     # CREATE BACKUP
-    # --------------------------------------------------------
+    # ========================================================
 
     print(
         "\n========== CREATING BACKUP ==========\n"
@@ -1237,9 +1341,9 @@ def main():
         f"✓ Backup created: {backup_path}"
     )
 
-    # --------------------------------------------------------
-    # AGENT LOOP
-    # --------------------------------------------------------
+    # ========================================================
+    # ATTEMPT LOOP
+    # ========================================================
 
     max_attempts = 3
 
@@ -1251,75 +1355,81 @@ def main():
     ):
 
         print(
-            f"\n========== ATTEMPT "
-            f"{attempt}/{max_attempts} ==========\n"
+            "\n" + "=" * 50
         )
 
-        # ----------------------------------------------------
-        # INITIAL FIX
-        # ----------------------------------------------------
-
-        if attempt == 1:
-
-            print(
-                "\n========== GENERATING INITIAL FIX ==========\n"
-            )
-
-            fixed_code = generate_fix(
-                issue,
-                repository,
-                analysis,
-                target_file
-            )
-
-        # ----------------------------------------------------
-        # SELF-CORRECTION
-        # ----------------------------------------------------
-
-        else:
-
-            print(
-                "\n========== SELF-CORRECTION ==========\n"
-            )
-
-            print(
-                "🤖 Agent is analyzing "
-                "the previous test failure..."
-            )
-
-            fixed_code = repair_fix(
-                issue,
-                repository,
-                analysis,
-                target_file,
-                current_code,
-                test_result["output"]
-            )
-
-        # ----------------------------------------------------
-        # CLEAN RESPONSE
-        # ----------------------------------------------------
-
-        fixed_code = clean_response(
-            fixed_code
+        print(
+            f"ATTEMPT {attempt}/{max_attempts}"
         )
 
-        if not fixed_code:
+        print(
+            "=" * 50
+        )
+
+        # ====================================================
+        # GENERATE FIX
+        # ====================================================
+
+        try:
+
+            if attempt == 1:
+
+                print(
+                    "\n========== GENERATING INITIAL FIX ==========\n"
+                )
+
+                fixed_code = generate_fix(
+                    issue,
+                    str(repo_path),
+                    analysis,
+                    target_file
+                )
+
+            else:
+
+                print(
+                    "\n========== SELF-CORRECTION ==========\n"
+                )
+
+                fixed_code = repair_fix(
+                    issue,
+                    str(repo_path),
+                    analysis,
+                    target_file,
+                    current_code,
+                    test_result["output"]
+                )
+
+            fixed_code = clean_response(
+                fixed_code
+            )
+
+            trajectory.patch_generated(
+                "Patch generated successfully."
+            )
+
+        except Exception as error:
 
             print(
-                "❌ Agent returned empty code."
+                f"\n✗ AI fix generation failed: {error}"
             )
 
             test_result = {
                 "passed": False,
-                "output": "Agent returned empty code."
+                "output": (
+                    "AI fix generation failed:\n"
+                    + str(error)
+                )
             }
 
-            continue
+            if attempt < max_attempts:
+                continue
 
-        # ----------------------------------------------------
+            break
+
+        # ====================================================
         # SHOW PROPOSED CODE
-        # ----------------------------------------------------
+        # ====================================================
 
         print(
             "\n========== PROPOSED CODE ==========\n"
@@ -1329,64 +1439,328 @@ def main():
             fixed_code
         )
 
+        # ====================================================
+        # VALIDATE GENERATED CODE
+        # ====================================================
+
+        print(
+            "\n========== VALIDATING GENERATED FIX ==========\n"
+        )
+
+        try:
+
+            validate_python_syntax(
+                fixed_code
+            )
+
+            trajectory.patch_validated(
+                "Generated patch passed syntax validation."
+            )
+
+            print(
+                "✓ Generated fix passed syntax validation."
+            )
+
+        except Exception as error:
+
+            print(
+                f"✗ Generated fix failed syntax validation: "
+                f"{error}"
+            )
+
+            test_result = {
+                "passed": False,
+                "output": (
+                    "Generated fix failed syntax validation:\n"
+                    + str(error)
+                )
+            }
+
+            if attempt < max_attempts:
+                continue
+
+            break
+
+        # ====================================================
+        # PATCH SAFETY GATE
+        # ====================================================
+        #
+        # CRITICAL:
+        #
+        # The safety gate MUST happen BEFORE apply_fix().
+        #
+        # Compare:
+        #
+        #     original_code
+        #
+        #         VS
+        #
+        #     fixed_code
+        #
+        # Never compare current_code after apply_fix(),
+        # because then both values may contain the new code.
+        # ====================================================
+
+        print(
+            "\n========== PATCH SAFETY GATE ==========\n"
+        )
+
+        safety_result = validate_patch_safety(
+            str(repo_path),
+            target_file,
+            original_code,
+            fixed_code
+        )
+
+        print(
+            "Safety status : "
+            + (
+                "SAFE"
+                if safety_result["safe"]
+                else "REJECTED"
+            )
+        )
+
+        print(
+            f"Safety reason : "
+            f"{safety_result['reason']}"
+        )
+
+        if "changed_lines" in safety_result:
+
+            print(
+                f"Changed lines : "
+                f"{safety_result['changed_lines']}"
+            )
+
+        if "original_lines" in safety_result:
+
+            print(
+                f"Original lines: "
+                f"{safety_result['original_lines']}"
+            )
+
+        if "proposed_lines" in safety_result:
+
+            print(
+                f"Proposed lines: "
+                f"{safety_result['proposed_lines']}"
+            )
+
         # ----------------------------------------------------
+        # REJECT UNSAFE PATCH
+        # ----------------------------------------------------
+
+        if not safety_result["safe"]:
+
+            print(
+                "\n⚠ Patch rejected by safety gate."
+            )
+
+            test_result = {
+                "passed": False,
+                "output": (
+                    "Patch rejected by safety gate:\n"
+                    + safety_result["reason"]
+                )
+            }
+
+            if attempt < max_attempts:
+
+                print(
+                    "\n↻ Preparing another AI correction..."
+                )
+
+                continue
+
+            break
+
+        print(
+            "✓ Patch passed safety gate."
+        )
+
+        # ====================================================
         # APPLY FIX
-        # ----------------------------------------------------
+        # ====================================================
 
         print(
             "\n========== APPLYING FIX ==========\n"
         )
 
-        update_file(
-            str(repo_path),
-            target_file,
-            fixed_code
-        )
+        try:
 
-        current_code = fixed_code
+            apply_fix(
+                str(repo_path),
+                target_file,
+                fixed_code
+            )
+
+            trajectory.patch_applied(
+                target_file,
+                "Patch applied successfully."
+            )
+
+            print(
+                f"✓ Fix applied to {target_file}"
+            )
+
+        except Exception as error:
+
+            print(
+                f"✗ Failed to apply fix: {error}"
+            )
+
+            test_result = {
+                "passed": False,
+                "output": (
+                    "Failed to apply generated fix:\n"
+                    + str(error)
+                )
+            }
+
+            if attempt < max_attempts:
+                continue
+
+            break
+
+        # ====================================================
+        # READ ACTUAL PATCHED FILE
+        # ====================================================
+
+        try:
+
+            current_code = read_file(
+                str(repo_path),
+                target_file
+            )
+
+        except Exception as error:
+
+            print(
+                f"✗ Could not read patched file: {error}"
+            )
+
+            test_result = {
+                "passed": False,
+                "output": (
+                    "Could not read patched file:\n"
+                    + str(error)
+                )
+            }
+
+            if attempt < max_attempts:
+                continue
+
+            break
+
+        # ====================================================
+        # VALIDATE PATCHED FILE
+        # ====================================================
 
         print(
-            f"✓ Fix applied to {target_file}"
+            "\n========== VALIDATING TARGET FILE ==========\n"
         )
 
-        # ----------------------------------------------------
-        # SHOW DIFF
-        # ----------------------------------------------------
+        try:
+
+            validate_python_syntax(
+                current_code
+            )
+
+            print(
+                "✓ Patched file passed syntax validation."
+            )
+
+        except Exception as error:
+
+            print(
+                f"✗ Patched file failed syntax validation: "
+                f"{error}"
+            )
+
+            print(
+                "\n========== AUTOMATIC ROLLBACK ==========\n"
+            )
+
+            try:
+
+                restore_backup(
+                    str(repo_path),
+                    target_file
+                )
+
+                print(
+                    "✓ Invalid patch automatically rolled back."
+                )
+
+            except Exception as rollback_error:
+
+                print(
+                    f"✗ Rollback failed: "
+                    f"{rollback_error}"
+                )
+
+            current_code = read_file(
+                str(repo_path),
+                target_file
+            )
+
+            test_result = {
+                "passed": False,
+                "output": (
+                    "Patched file failed syntax validation:\n"
+                    + str(error)
+                )
+            }
+
+            if attempt < max_attempts:
+                continue
+
+            break
+
+        # ====================================================
+        # GENERATED DIFF
+        # ====================================================
 
         print(
             "\n========== GENERATED DIFF ==========\n"
         )
 
-        diff = get_git_diff(
-            str(repo_path)
-        )
+        try:
 
-        if diff:
-
-            print(diff)
-
-        else:
+            diff = get_diff(
+                str(repo_path)
+            )
 
             print(
+                diff
+                if diff
+                else
                 "No git changes detected."
             )
 
-        # ----------------------------------------------------
+        except Exception as error:
+
+            print(
+                f"⚠ Could not generate diff: {error}"
+            )
+
+        # ====================================================
         # RUN TESTS
-        # ----------------------------------------------------
+        # ====================================================
 
         test_result = run_tests(
             str(repo_path)
         )
 
-        # ----------------------------------------------------
+        # ====================================================
         # SUCCESS
-        # ----------------------------------------------------
+        # ====================================================
 
         if test_result["passed"]:
 
             print(
-                "\n========================================"
+                "\n" + "=" * 50
             )
 
             print(
@@ -1401,93 +1775,200 @@ def main():
                 f"✓ Target file: {target_file}"
             )
 
-            # Remove backup after successful verification
-
-            backup_file = Path(
-                backup_path
-            )
-
-            if backup_file.exists():
-
-                backup_file.unlink()
-
-                print(
-                    "✓ Backup removed after "
-                    "successful verification"
-                )
-
             print(
-                "========================================"
-            )
-
-            return
-
-        # ----------------------------------------------------
-        # FAILURE
-        # ----------------------------------------------------
-
-        print(
-            "\n❌ Tests failed."
-        )
-
-        current_code = read_file(
-            str(repo_path),
-            target_file
-        )
-
-        # ----------------------------------------------------
-        # MAX ATTEMPTS
-        # ----------------------------------------------------
-
-        if attempt == max_attempts:
-
-            print(
-                "\n========================================"
-            )
-
-            print(
-                "❌ FIX NOT VERIFIED"
-            )
-
-            print(
-                "Maximum attempts reached."
-            )
-
-            # ------------------------------------------------
-            # ROLLBACK
-            # ------------------------------------------------
-
-            print(
-                "\n========== ROLLING BACK FIX ==========\n"
+                "=" * 50
             )
 
             try:
 
-                restore_backup(
+                remove_backup(
                     str(repo_path),
                     target_file
                 )
 
                 print(
-                    f"✓ Original code restored for "
-                    f"{target_file}"
+                    "✓ Backup removed"
                 )
 
             except Exception as error:
 
                 print(
-                    f"❌ Rollback failed: {error}"
+                    f"⚠ Could not remove backup: {error}"
                 )
 
+            return True
+
+        # ====================================================
+        # FAILURE ANALYSIS
+        # ====================================================
+
+        print(
+            f"\n❌ Attempt {attempt} failed."
+        )
+
+        failure = classify_failure(
+            test_result["output"]
+        )
+
+        print(
+            "\n========== FAILURE ANALYSIS ==========\n"
+        )
+
+        print(
+            f"Failure type : {failure['type']}"
+        )
+
+        print(
+            f"Severity     : {failure['severity']}"
+        )
+
+        print(
+            f"Reason       : {failure['reason']}"
+        )
+
+        # ====================================================
+        # PREPARE NEXT ATTEMPT
+        # ====================================================
+
+        if attempt < max_attempts:
+
             print(
-                "========================================"
+                "\n↻ Preparing intelligent self-correction..."
             )
 
-            return
+            try:
+
+                current_code = read_file(
+                    str(repo_path),
+                    target_file
+                )
+
+            except Exception:
+
+                current_code = fixed_code
+
+    # ========================================================
+    # ALL ATTEMPTS FAILED
+    # ========================================================
+
+    print(
+        "\n" + "=" * 50
+    )
+
+    print(
+        "❌ FIX NOT VERIFIED"
+    )
+
+    print(
+        "Maximum attempts reached."
+    )
+
+    print(
+        "=" * 50
+    )
+
+    # ========================================================
+    # ROLLBACK
+    # ========================================================
+
+    print(
+        "\n========== ROLLING BACK ==========\n"
+    )
+
+    try:
+
+        restore_backup(
+            str(repo_path),
+            target_file
+        )
+
+        print(
+            f"✓ Original code restored for "
+            f"{target_file}"
+        )
+
+    except Exception as error:
+
+        print(
+            f"❌ Rollback failed: {error}"
+        )
+
+    print(
+        "\n========================================"
+    )
+
+    return False
 
 
 # ============================================================
-# PROGRAM ENTRY POINT
+# MAIN
+# ============================================================
+
+def main():
+
+    print(
+        "\n========================================"
+    )
+
+    print(
+        "🤖 AUTONOMOUS BUG FIX AGENT"
+    )
+
+    print(
+        "========================================"
+    )
+
+    benchmark = select_benchmark()
+
+    print(
+        f"\nSelected benchmark: {benchmark.name}"
+    )
+
+    print(
+        f"Repository: {benchmark / 'repo'}"
+    )
+
+    print(
+        f"Issue: {benchmark / 'issue.txt'}"
+    )
+
+    try:
+
+        success = run_agent(
+            benchmark
+        )
+
+        if success:
+
+            print(
+                "\n✅ Agent completed successfully."
+            )
+
+        else:
+
+            print(
+                "\n❌ Agent could not verify the fix."
+            )
+
+    except Exception as error:
+
+        print(
+            "\n========================================"
+        )
+
+        print(
+            "❌ AGENT ERROR"
+        )
+
+        print(
+            "========================================"
+        )
+
+        print(error)
+
+
+# ============================================================
+# ENTRY POINT
 # ============================================================
 
 if __name__ == "__main__":

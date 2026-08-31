@@ -1,0 +1,6 @@
+--- a/bug_02/discount.py
++++ b/bug_02/discount.py
+@@ -1,2 +1,2 @@
+ def calculate_discount(price, discount_percent):
+-    return price - (price * discount_percent / 100)
++    return price - (price * discount_percent / 100)

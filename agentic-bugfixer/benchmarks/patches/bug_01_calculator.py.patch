@@ -1,0 +1,9 @@
+--- a/bug_01/calculator.py
++++ b/bug_01/calculator.py
+@@ -1,5 +1,4 @@
+ def divide(a, b):
+     if b == 0:
+         raise ValueError("Cannot divide by zero")
+-    result = a / b
+-    return int(result) if result.is_integer() else result
++    return a / b

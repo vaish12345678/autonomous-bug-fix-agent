@@ -1,0 +1,1 @@
+The function is_positive should return True when the given number is greater than zero. It currently returns the wrong result for positive numbers. Fix the implementation without modifying the tests.

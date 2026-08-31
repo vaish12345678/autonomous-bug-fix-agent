@@ -1,0 +1,1 @@
+Fix the function so square(n) returns n squared.

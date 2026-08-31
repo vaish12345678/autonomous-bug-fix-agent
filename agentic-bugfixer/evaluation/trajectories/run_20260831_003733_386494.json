@@ -1,0 +1,94 @@
+{
+    "run_id": "run_20260831_003733_386494",
+    "benchmark": "demo",
+    "started_at": "2026-08-31T00:37:33.386494",
+    "event_count": 9,
+    "events": [
+        {
+            "step": 1,
+            "event": "RUN_STARTED",
+            "timestamp": "2026-08-31T00:37:33.386494",
+            "details": {
+                "benchmark": "demo"
+            }
+        },
+        {
+            "step": 2,
+            "event": "ACTION",
+            "timestamp": "2026-08-31T00:37:33.386494",
+            "details": {
+                "action": "Read repository",
+                "tool": "read_repository",
+                "result": "Repository loaded."
+            }
+        },
+        {
+            "step": 3,
+            "event": "AI_DECISION",
+            "timestamp": "2026-08-31T00:37:33.386494",
+            "details": {
+                "stage": "BUG_ANALYSIS",
+                "decision": "calculator.py is the target file.",
+                "reasoning": "Repository inspection identified the defective operation."
+            }
+        },
+        {
+            "step": 4,
+            "event": "ACTION",
+            "timestamp": "2026-08-31T00:37:33.386494",
+            "details": {
+                "action": "Generate patch",
+                "tool": "AI patch generator",
+                "result": "Patch generated."
+            }
+        },
+        {
+            "step": 5,
+            "event": "ACTION",
+            "timestamp": "2026-08-31T00:37:33.386494",
+            "details": {
+                "action": "Validate patch",
+                "tool": "syntax validator",
+                "result": "Syntax validation passed."
+            }
+        },
+        {
+            "step": 6,
+            "event": "HUMAN_CHECKPOINT",
+            "timestamp": "2026-08-31T00:37:33.386494",
+            "details": {
+                "decision": "APPROVED"
+            }
+        },
+        {
+            "step": 7,
+            "event": "ACTION",
+            "timestamp": "2026-08-31T00:37:33.386494",
+            "details": {
+                "action": "Apply patch",
+                "tool": "patcher",
+                "result": "Patch applied successfully."
+            }
+        },
+        {
+            "step": 8,
+            "event": "TEST_RESULT",
+            "timestamp": "2026-08-31T00:37:33.386494",
+            "details": {
+                "passed": true,
+                "output": "2 passed in 0.02s",
+                "runtime": 1.89
+            }
+        },
+        {
+            "step": 9,
+            "event": "FINAL_RESULT",
+            "timestamp": "2026-08-31T00:37:33.386494",
+            "details": {
+                "status": "VERIFIED_AND_ACCEPTED",
+                "confidence": 100.0,
+                "risk_level": "LOW"
+            }
+        }
+    ]
+}
