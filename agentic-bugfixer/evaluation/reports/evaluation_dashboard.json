@@ -1,49 +1,84 @@
 {
     "benchmark_statistics": {
-        "total": 5,
-        "passed": 0,
-        "failed": 5,
-        "success_rate": 0.0,
-        "average_runtime": 1.83562,
+        "total": 12,
+        "passed": 12,
+        "failed": 0,
+        "success_rate": 100.0,
+        "average_runtime": 0.8709416666666666,
         "benchmarks": [
             {
                 "benchmark": "bug_01",
-                "status": "FAIL",
-                "runtime": 1.9492
+                "status": "PASS",
+                "runtime": 0.8834
             },
             {
                 "benchmark": "bug_02",
-                "status": "FAIL",
-                "runtime": 1.8099
+                "status": "PASS",
+                "runtime": 0.8622
             },
             {
                 "benchmark": "bug_03",
-                "status": "FAIL",
-                "runtime": 1.7698
+                "status": "PASS",
+                "runtime": 0.857
             },
             {
                 "benchmark": "bug_04",
-                "status": "FAIL",
-                "runtime": 1.7987
+                "status": "PASS",
+                "runtime": 0.8719
             },
             {
                 "benchmark": "bug_05",
-                "status": "FAIL",
-                "runtime": 1.8505
+                "status": "PASS",
+                "runtime": 0.8955
+            },
+            {
+                "benchmark": "bug_06",
+                "status": "PASS",
+                "runtime": 0.8787
+            },
+            {
+                "benchmark": "bug_07",
+                "status": "PASS",
+                "runtime": 0.852
+            },
+            {
+                "benchmark": "bug_08",
+                "status": "PASS",
+                "runtime": 0.8735
+            },
+            {
+                "benchmark": "bug_09",
+                "status": "PASS",
+                "runtime": 0.8965
+            },
+            {
+                "benchmark": "bug_10",
+                "status": "PASS",
+                "runtime": 0.8719
+            },
+            {
+                "benchmark": "bug_11",
+                "status": "PASS",
+                "runtime": 0.853
+            },
+            {
+                "benchmark": "bug_12",
+                "status": "PASS",
+                "runtime": 0.8557
             }
         ]
     },
     "audit_statistics": {
         "total_runs": 1,
-        "successful_runs": 0,
-        "accepted_runs": 0,
-        "success_rate": 0.0,
-        "acceptance_rate": 0.0
+        "successful_runs": 1,
+        "accepted_runs": 1,
+        "success_rate": 100.0,
+        "acceptance_rate": 100.0
     },
     "system_score": {
-        "correctness": 0.0,
-        "safety": 0.0,
-        "reliability": 0.0,
-        "overall": 0.0
+        "correctness": 100.0,
+        "safety": 100.0,
+        "reliability": 100.0,
+        "overall": 100.0
     }
 }
