@@ -1,2 +1,2 @@
 def absolute_value(n):
-    return n
+    return abs(n)
